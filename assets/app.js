@@ -22,6 +22,8 @@ var CATS={
  video:{label:"Video & Audio",outputs:["MP3","MP4","MKV"],hint:"MP4, MOV, MKV or WebM video"},
  data:{label:"Data",outputs:["CSV","XLSX","TXT"],hint:"Text, CSV or Excel files"}
 };
+var CAT_INPUTS={document:["pdf","docx","txt","md","pptx"],image:["png","jpg","jpeg","webp","gif","bmp","avif","heic","heif","tif","tiff"],video:["mp4","mov","mkv","webm","avi"],data:["txt","csv","xlsx","xls"]};
+
 function canConvert(inp,out){
  inp=inp.toLowerCase();out=out.toLowerCase();
  if(inp===out)return "That is already a "+out.toUpperCase()+" file — choose a different output.";
@@ -162,28 +164,43 @@ function dataConvert(file,out,buf,text){
  return Promise.reject(new Error("This data conversion is not supported."));
 }
 
-/* ---------- Video (ffmpeg.wasm 0.11, desktop Chrome recommended) ---------- */
-var ffmpegInst=null;
+/* ---------- Video (ffmpeg.wasm 0.12, SINGLE-THREAD core: no SharedArrayBuffer, no COOP/COEP) ---------- */
+var ffmpegInst=null, ffmpegLoad=null;
+function loadFFmpegST(progress){
+ if(ffmpegInst) return Promise.resolve(ffmpegInst);
+ if(ffmpegLoad) return ffmpegLoad;
+ ffmpegLoad=(async function(){
+   var mod=await import("https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js");
+   var util=await import("https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.2/dist/esm/index.js");
+   var ff=new mod.FFmpeg();
+   ff.on("progress",function(e){ if(e&&e.progress!=null&&progress) progress(Math.round(e.progress*100)); });
+   var base="https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm";
+   await ff.load({coreURL: await util.toBlobURL(base+"/ffmpeg-core.js","text/javascript"), wasmURL: await util.toBlobURL(base+"/ffmpeg-core.wasm","application/wasm")});
+   ffmpegInst=ff; return ff;
+ })();
+ ffmpegLoad.catch(function(){ ffmpegLoad=null; });
+ return ffmpegLoad;
+}
 function videoConvert(file,out,progress){
- return loadScript("https://unpkg.com/@ffmpeg/ffmpeg@0.11.0/dist/ffmpeg.min.js").then(function(){
-  if(!window.FFmpeg||!window.FFmpeg.createFFmpeg)throw new Error("Video engine did not load in this browser.");
-  if(!ffmpegInst){
-   ffmpegInst=window.FFmpeg.createFFmpeg({log:false,corePath:"https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js"});
-   ffmpegInst.setProgress(function(p){if(p&&p.ratio)progress(Math.round(p.ratio*100))});
-   return ffmpegInst.load().then(function(){return ffmpegInst});
-  }
-  return ffmpegInst;
- }).then(function(ff){
-  var inp=extOf(file.name);var inName="input."+inp;var outName="output."+out;
-  return file.arrayBuffer().then(function(buf){ff.FS("writeFile",inName,new Uint8Array(buf));
-   var args=[ "-i",inName ];
-   if(out==="mp3")args.push("-vn","-c:a","libmp3lame","-q:a","2");
-   else if(out==="mp4")args.push("-c:v","libx264","-c:a","aac","-movflags","+faststart");
-   else if(out==="mkv")args.push("-c","copy");
+ return loadFFmpegST(progress).then(async function(ff){
+   var inp=extOf(file.name); var inName="input."+inp; var outName="output."+out;
+   await ff.writeFile(inName, new Uint8Array(await file.arrayBuffer()));
+   var args=["-i",inName];
+   if(out==="mp3") args.push("-vn","-c:a","libmp3lame","-q:a","2");
+   else if(out==="mp4") args.push("-c:v","libx264","-c:a","aac","-movflags","+faststart");
+   else if(out==="mkv") args.push("-c","copy");
    args.push(outName);
-   return ff.run.apply(ff,args).then(function(){var d=ff.FS("readFile",outName);try{ff.FS("unlink",inName);ff.FS("unlink",outName)}catch(e){}return new Blob([d.buffer],{type:out==="mp3"?"audio/mpeg":"video/"+out})});
-  });
- }).catch(function(e){throw new Error("Video conversion could not start: "+(e&&e.message?e.message:"engine failed to load")+". Try desktop Chrome, a smaller file, and a stable connection. Your file was not uploaded anywhere.")});
+   var code=await ff.exec(args);
+   if(code!==0) throw new Error("Video encoder returned an error. Try a smaller file in desktop Chrome.");
+   var d=await ff.readFile(outName);
+   try{ await ff.deleteFile(inName); await ff.deleteFile(outName); }catch(e){}
+   if(!d||d.length===0) throw new Error("Video conversion produced an empty file.");
+   return new Blob([d],{type:out==="mp3"?"audio/mpeg":"video/"+out});
+ }).catch(function(e){
+   var msg=e&&e.message?e.message:"video engine failed to load";
+   if(/SharedArrayBuffer/i.test(msg)) msg="Video engine could not start on this page. Reload, then try desktop Chrome with a smaller file.";
+   throw new Error("Video conversion could not start: "+msg+". Try desktop Chrome, a smaller file, and a stable connection. Your file was not uploaded anywhere.");
+ });
 }
 
 /* ---------- Main dispatch ---------- */
@@ -204,9 +221,10 @@ function convertFile(file,out,progress){
   else if(inp==="docx")textP=file.arrayBuffer().then(function(b){return docxConvert(b,"txt")});
   else if(inp==="pptx")textP=file.arrayBuffer().then(function(b){return pptxToText(b)});
   else textP=file.text();
+  textP=textP.then(function(tt){ if(!String(tt||"").trim()){ if(inp==="pdf") throw new Error("No extractable text found — this looks like a scanned PDF. Try a text-based PDF, or convert the PDF to an image instead."); throw new Error("No text could be extracted from this file. It may be empty or in an unsupported format."); } return tt; });
   if(out==="txt")return textP.then(function(t){return {blob:new Blob([t],{type:"text/plain"}),name:base+".txt"}});
   if(out==="md"){
-   if(inp==="docx")return file.arrayBuffer().then(function(b){return docxConvert(b,"md")}).then(function(t){return {blob:new Blob([t],{type:"text/markdown"}),name:base+".md"}});
+   if(inp==="docx")return file.arrayBuffer().then(function(b){return docxConvert(b,"md")}).then(function(t){if(!String(t||"").trim())throw new Error("No text could be extracted from this Word file.");return {blob:new Blob([t],{type:"text/markdown"}),name:base+".md"}});
    if(inp==="pptx")return textP.then(function(t){return {blob:new Blob([t.split("\n\n").map(function(s){return "## "+s}).join("\n\n")],{type:"text/markdown"}),name:base+".md"}});
    return textP.then(function(t){return {blob:new Blob([mdFromText(t)],{type:"text/markdown"}),name:base+".md"}});
   }
@@ -217,18 +235,80 @@ function convertFile(file,out,progress){
  var imgIn=["png","jpg","jpeg","webp","gif","bmp","avif","heic","heif","tif","tiff"];
  if(imgIn.indexOf(inp)>=0){
   if(inp==="tif"||inp==="tiff"){/* try canvas decode; imageConvert will give a clear error if it fails */ }
-  return imageConvert(file,out).then(function(b){return {blob:b,name:base+"."+out}});
+  return imageConvert(file,out).then(function(b){return {blob:b,name:base+"."+out}}).catch(function(e){ if(/decode|HEIC/i.test(e.message||"")) throw e; throw new Error("This image could not be converted: "+(e.message||"unknown error")+" Try a PNG or JPG file and tap Retry."); });
  }
  var vidIn=["mp4","mov","mkv","webm","avi"];
  if(vidIn.indexOf(inp)>=0){return videoConvert(file,out,progress||function(){}).then(function(b){return {blob:b,name:base+"."+out}})}
  var datIn=["txt","csv","xlsx","xls"];
  if(datIn.indexOf(inp)>=0){
-  return Promise.all([file.arrayBuffer(),file.text().catch(function(){return ""})]).then(function(parts){return dataConvert(file,out,parts[0],parts[1])}).then(function(b){return {blob:b,name:base+"."+out}});
+  return Promise.all([file.arrayBuffer(),file.text().catch(function(){return ""})]).then(function(parts){return dataConvert(file,out,parts[0],parts[1])}).then(function(b){return {blob:b,name:base+"."+out}}).catch(function(e){ if(/not supported/i.test(e.message||"")) throw e; throw new Error("This spreadsheet or data file could not be read — it may be damaged or in an unsupported format. Check the file and tap Retry."); });
  }
  return Promise.reject(new Error("Unsupported file type: ."+inp));
 }
 
 /* ---------- Wheel UI: two-stage flow ---------- */
+
+/* ---------- Wedge wheel (SVG pie/donut, slow rotation, upright labels) ---------- */
+var __arkDragging=false, __arkConverting=false;
+document.addEventListener("dragstart",function(){ __arkDragging=true; });
+document.addEventListener("dragend",function(){ __arkDragging=false; });
+function wedgePath(cx,cy,rO,rI,a0,a1){
+ var gap=0.035; a0+=gap; a1-=gap;
+ var pt=function(r,a){ return (cx+r*Math.cos(a)).toFixed(2)+","+(cy+r*Math.sin(a)).toFixed(2); };
+ var large=(a1-a0)>Math.PI?1:0;
+ return "M"+pt(rO,a0)+" A"+rO+","+rO+" 0 "+large+" 1 "+pt(rO,a1)+" L"+pt(rI,a1)+" A"+rI+","+rI+" 0 "+large+" 0 "+pt(rI,a0)+" Z";
+}
+function buildWedgeSVG(container, segments, opts){
+ var NS="http://www.w3.org/2000/svg";
+ var svg=document.createElementNS(NS,"svg"); svg.setAttribute("viewBox","0 0 400 400"); svg.setAttribute("class","wheel-svg"); svg.setAttribute("role","group");
+ var rotor=document.createElementNS(NS,"g"), labels=document.createElementNS(NS,"g");
+ svg.appendChild(rotor); svg.appendChild(labels); container.appendChild(svg);
+ var cx=200, cy=200, rM=143, n=segments.length, texts=[];
+ var state={angle:0,last:null,hover:false,reduced:!!(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches)};
+ segments.forEach(function(seg,i){
+  var a0=(-Math.PI/2)+i*(2*Math.PI/n), a1=a0+(2*Math.PI/n);
+  var path=document.createElementNS(NS,"path");
+  path.setAttribute("d", wedgePath(cx,cy,188,98,a0,a1));
+  path.setAttribute("class","wedge"+(seg.active?" active":""));
+  path.setAttribute("tabindex","0");
+  var ttl=document.createElementNS(NS,"title"); ttl.textContent=seg.label; path.appendChild(ttl);
+  var activate=function(){ if(opts.onSelect) opts.onSelect(seg.value||seg.label, path); };
+  path.addEventListener("click",activate);
+  path.addEventListener("keydown",function(e){ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); activate(); }});
+  path.addEventListener("mouseenter",function(){ state.hover=true; path.classList.add("hover"); });
+  path.addEventListener("mouseleave",function(){ state.hover=false; path.classList.remove("hover"); });
+  path.addEventListener("dragover",function(e){ e.preventDefault(); state.hover=true; path.classList.add("hover"); });
+  path.addEventListener("dragleave",function(){ state.hover=false; path.classList.remove("hover"); });
+  path.addEventListener("drop",function(e){ e.preventDefault(); state.hover=false; path.classList.remove("hover"); if(opts.onDrop) opts.onDrop(seg.value||seg.label, e); });
+  rotor.appendChild(path);
+  var txt=document.createElementNS(NS,"text"); txt.setAttribute("class","wedge-label"); txt.setAttribute("dominant-baseline","middle");
+  var words=seg.label.split(" ");
+  if(words.length>1 && seg.label.length>9){
+   var half=Math.ceil(words.length/2);
+   var s1=document.createElementNS(NS,"tspan"); s1.setAttribute("dy","-7"); s1.textContent=words.slice(0,half).join(" ");
+   var s2=document.createElementNS(NS,"tspan"); s2.setAttribute("dy","14"); s2.textContent=words.slice(half).join(" ");
+   txt.appendChild(s1); txt.appendChild(s2);
+  } else { txt.textContent=seg.label; }
+  labels.appendChild(txt); texts.push({el:txt,mid:(a0+a1)/2});
+ });
+ function frame(ts){
+  if(state.last==null) state.last=ts;
+  var dt=(ts-state.last)/1000; state.last=ts;
+  var paused=state.hover||__arkDragging||__arkConverting||state.reduced;
+  if(!paused) state.angle+=dt*(360/105); /* ~105 seconds per revolution: slow, professional */
+  rotor.setAttribute("transform","rotate("+state.angle.toFixed(2)+" 200 200)");
+  texts.forEach(function(item){
+   var a=item.mid+state.angle*Math.PI/180;
+   var x=cx+rM*Math.cos(a), y=cy+rM*Math.sin(a);
+   item.el.setAttribute("x",x.toFixed(1)); item.el.setAttribute("y",y.toFixed(1));
+   Array.prototype.forEach.call(item.el.querySelectorAll("tspan"),function(sp){ sp.setAttribute("x",x.toFixed(1)); });
+  });
+  requestAnimationFrame(frame);
+ }
+ requestAnimationFrame(frame);
+ return {svg:svg};
+}
+
 /* Stage 1: drop zone only. Stage 2 (after a file arrives): conversion wheel
    + draggable file chip. Drag the chip onto a segment, tap a segment, or
    drop a native file directly onto a segment. */
@@ -238,53 +318,66 @@ function buildWheel(box){
  var cfg=CATS[cat]||CATS.document;
  var wheel=box.querySelector(".wheel");if(!wheel)return;
  wheel.innerHTML="";
- var centre=document.createElement("div");centre.className="centre";
- centre.innerHTML="<strong>"+esc(cfg.label)+"</strong><span class=\"small\">Release the file on a format</span>";
- wheel.appendChild(centre);
- var state={file:null};
+ var state={file:null,lastFmt:null};
  function setStatus(msg,kind){var el=box.querySelector(".status");if(el){el.textContent=msg;el.className="status "+(kind||"")}}
  function setProgress(p){var bar=box.querySelector(".progress i");if(bar)bar.style.width=p+"%"}
+ function hideDownload(){var dl=box.querySelector(".download");if(dl){dl.hidden=true;dl.removeAttribute("href")}}
+ function showActions(show){var a=box.querySelector(".err-actions");if(a)a.hidden=!show}
+ function showError(msg){ setProgress(0); setStatus(msg,"err"); hideDownload(); showActions(true); __arkConverting=false; }
+ var centre=document.createElement("div");centre.className="centre";
+ centre.innerHTML="<strong>"+esc(cfg.label)+"</strong><span class=\"small\">Release the file on a format</span>";
+ centre.setAttribute("draggable","false");
+ centre.addEventListener("dragstart",function(e){ if(!state.file)return; try{ e.dataTransfer.setData("text/plain","arkfile"); e.dataTransfer.effectAllowed="copyMove"; __arkDragging=true; }catch(err){} });
+ centre.addEventListener("dragend",function(){ __arkDragging=false; });
+ centre.addEventListener("dragover",function(e){ e.preventDefault(); });
+ centre.addEventListener("drop",function(e){ e.preventDefault(); if(e.dataTransfer.files&&e.dataTransfer.files[0]){ setFile(e.dataTransfer.files[0]); } else if(state.file){ setStatus("Release the file on a format segment, not the centre.","err"); } });
  function setFile(f){
   state.file=f;box._arkFile=f;
   var chip=document.querySelector(".file-chip");if(chip)chip.textContent=f.name+" • "+fmtSize(f.size);
   var stage=document.querySelector(".stage2");if(stage)stage.hidden=false;
   var dz=document.querySelector(".dropzone");if(dz)dz.hidden=true;
+  var sp=centre.querySelector(".small");if(sp)sp.textContent=f.name+" • "+fmtSize(f.size);
+  centre.setAttribute("draggable","true");
+  hideDownload(); showActions(false); setProgress(0);
   setStatus("File ready — drag it onto a format, or tap a format.","ok");
  }
  function doConvert(fmt){
   if(!state.file){setStatus("Drop or browse for a file first, then drag it onto "+fmt+".","err");return}
-  var bad=canConvert(extOf(state.file.name),fmt);
-  if(bad){setStatus(bad,"err");return}
+  if(state.file.size===0){showError("That file is empty (0 bytes) — choose a different file.");return}
+  var inp=extOf(state.file.name);
+  var allowed=CAT_INPUTS[cat]||[];
+  if(allowed.length&&allowed.indexOf(inp)<0){showError("Wrong file type for "+cfg.label+". This page accepts: "+allowed.map(function(x){return "."+x.toUpperCase()}).join(", ")+".");return}
+  var bad=canConvert(inp,fmt);
+  if(bad){showError(bad);return}
+  state.lastFmt=fmt; __arkConverting=true; hideDownload(); showActions(false);
   setStatus("Converting to "+fmt+"…");setProgress(10);
   convertFile(state.file,fmt,function(p){setProgress(p)}).then(function(res){
-   setProgress(100);setStatus("Done — "+res.name+" is ready.","ok");
+   __arkConverting=false;
+   if(!res.blob||res.blob.size===0){ showError("Conversion produced an empty file — try a different file or format."); return; }
+   setProgress(100);setStatus("Done — "+res.name+" is ready.","ok"); showActions(false);
    var dl=box.querySelector(".download");
    if(dl){dl.hidden=false;dl.textContent="Download "+res.name;dl.onclick=function(e){e.preventDefault();downloadBlob(res.blob,res.name)}}
-  }).catch(function(err){setProgress(0);setStatus(err&&err.message?err.message:"Conversion failed. Try a smaller file.","err")});
- }
- cfg.outputs.forEach(function(fmt,i){
-  var btn=document.createElement("button");btn.type="button";btn.className="seg"+(preset===fmt?" active":"");btn.textContent=fmt;
-  btn.style.animationDelay=(i*55)+"ms";
-  var ang=(-90+i*(360/cfg.outputs.length))*Math.PI/180;
-  btn.style.left=(50+40*Math.cos(ang))+"%";btn.style.top=(50+40*Math.sin(ang))+"%";
-  btn.title="Convert to "+fmt;
-  btn.addEventListener("click",function(){doConvert(fmt)});
-  btn.addEventListener("dragover",function(e){e.preventDefault();btn.classList.add("drag-over")});
-  btn.addEventListener("dragleave",function(){btn.classList.remove("drag-over")});
-  btn.addEventListener("drop",function(e){
-   e.preventDefault();btn.classList.remove("drag-over");
-   if(e.dataTransfer.files&&e.dataTransfer.files[0]){setFile(e.dataTransfer.files[0]);doConvert(fmt)}
-   else if(state.file){doConvert(fmt)}
+  }).catch(function(err){
+   __arkConverting=false;
+   var msg=err&&err.message?err.message:"Conversion failed.";
+   if(/Could not load|did not load/i.test(msg)) msg="Converter library failed to load. Check your connection, then tap Retry.";
+   else if(/SharedArrayBuffer/i.test(msg)) msg="Video engine could not start on this page. Try desktop Chrome with a smaller file, then tap Retry.";
+   showError(msg);
   });
-  wheel.appendChild(btn);
+ }
+ var segs=cfg.outputs.map(function(fmt){ return {label:fmt,value:fmt,active:(preset===fmt)}; });
+ buildWedgeSVG(wheel, segs, {
+  onSelect:function(fmt){ doConvert(fmt); },
+  onDrop:function(fmt,e){ if(e.dataTransfer.files&&e.dataTransfer.files[0]){ setFile(e.dataTransfer.files[0]); doConvert(fmt); } else if(state.file){ doConvert(fmt); } }
  });
- centre.addEventListener("dragover",function(e){e.preventDefault()});
- centre.addEventListener("drop",function(e){
-  e.preventDefault();
-  if(e.dataTransfer.files&&e.dataTransfer.files[0]){setFile(e.dataTransfer.files[0])}
-  else if(state.file){setStatus("Release the file on a format segment, not the centre.","err")}
- });
- box._arkConvert=doConvert;box._arkSetFile=setFile;
+ wheel.appendChild(centre);
+ var actions=document.createElement("div"); actions.className="err-actions"; actions.hidden=true;
+ var retry=document.createElement("button"); retry.type="button"; retry.className="btn"; retry.textContent="Retry";
+ retry.addEventListener("click",function(){ if(state.lastFmt) doConvert(state.lastFmt); });
+ var change2=document.createElement("button"); change2.type="button"; change2.className="btn ghost"; change2.textContent="Change file";
+ change2.addEventListener("click",function(){ var cb=document.querySelector(".change-file"); if(cb) cb.click(); });
+ actions.appendChild(retry); actions.appendChild(change2); box.appendChild(actions);
+ box._arkConvert=doConvert;box._arkSetFile=setFile;box._arkShowError=showError;
 }
 document.addEventListener("DOMContentLoaded",function(){
  var box=document.querySelector(".wheel-box");
@@ -319,9 +412,20 @@ document.addEventListener("DOMContentLoaded",function(){
    if(chip)chip.textContent="";
    var dl=box.querySelector(".download");if(dl)dl.hidden=true;
    var st=box.querySelector(".status");if(st){st.textContent="Drag the file onto a format.";st.className="status"}
+   var ea=box.querySelector(".err-actions");if(ea)ea.hidden=true;
+   var cen=box.querySelector(".centre");if(cen){var s2=cen.querySelector(".small");if(s2)s2.textContent="Release the file on a format";cen.setAttribute("draggable","false")}
    var bar=box.querySelector(".progress i");if(bar)bar.style.width="0%";
    if(input)input.value="";
   });
+ }
+ var mw=document.querySelector(".main-wheel");
+ if(mw){
+  mw.innerHTML="";
+  buildWedgeSVG(mw,[
+   {label:"Documents",value:"document"},{label:"Images",value:"image"},
+   {label:"Video & Audio",value:"video"},{label:"Data",value:"data"}
+  ],{onSelect:function(v){ location.href="/tools.html?cat="+v; },onDrop:function(){}});
+  var mc=document.createElement("div");mc.className="mw-centre";mc.textContent="Choose a category";mw.appendChild(mc);
  }
  /* blog list */
  var list=document.getElementById("blogList");

@@ -52,3 +52,19 @@ input,textarea,select{width:100%;padding:12px;border-radius:10px;border:1px soli
 footer{border-top:1px solid var(--line);padding:24px 0;color:var(--muted)}
 @media(max-width:640px){.centre{width:180px;height:180px;font-size:.9rem}.mw-centre{width:170px;height:170px}.seg{width:88px;height:46px;margin-left:-44px;margin-top:-23px;font-size:.85rem}.mw-seg{width:110px;height:50px;margin-left:-55px;margin-top:-25px;font-size:.9rem}nav.main{gap:10px}.hero{padding:32px 0 12px}}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* v3 wedge wheel (SVG pie/donut) */
+.wheel-svg{width:100%;height:auto;display:block}
+.wedge{fill:#ffffff;stroke:#e3d9c9;stroke-width:1.5;cursor:pointer;transition:fill .2s ease,stroke .2s ease}
+.wedge:hover,.wedge.hover{fill:#f3ede3;stroke:#8a5a1f;stroke-width:2.2}
+.wedge.active{fill:#f3ede3;stroke:#8a5a1f;stroke-width:2.5}
+.wedge-label{font-weight:700;font-size:13px;fill:#211d17;pointer-events:none;text-anchor:middle}
+.wheel{overflow:visible}
+.quick-links{text-align:center;margin:6px 0 0}
+.about{max-width:760px;margin:8px auto 0}
+.about h2{margin-bottom:6px}
+@media(max-width:640px){.wedge-label{font-size:11px}}
+.err-actions{display:flex;gap:10px;justify-content:center;margin-top:12px;flex-wrap:wrap}
+.err-actions[hidden]{display:none}
+.main-wheel .mw-centre{pointer-events:none}
+.centre[draggable="true"]{cursor:grab}
