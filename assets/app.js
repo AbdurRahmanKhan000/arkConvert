@@ -17,24 +17,47 @@ function downloadText(text,name,type){downloadBlob(new Blob([text],{type:type||"
 
 /* ---------- Categories / wheel outputs ---------- */
 var CATS={
- document:{label:"Documents",outputs:["PDF","DOCX","TXT","MD","PPTX","JPG","PNG"],hint:"PDF, Word, text, Markdown or PowerPoint"},
+ document:{label:"Documents",outputs:["PDF","DOCX","TXT","MD","PPTX","HTML","JPG","PNG"],hint:"PDF, Word, text, Markdown, PowerPoint or HTML"},
  image:{label:"Images",outputs:["PNG","JPG","WEBP","GIF","BMP","AVIF","PDF"],hint:"PNG, JPG, WebP, GIF, BMP, AVIF or PDF"},
- video:{label:"Video & Audio",outputs:["MP3","MP4","MKV"],hint:"MP4, MOV, MKV or WebM video"},
- data:{label:"Data",outputs:["CSV","XLSX","TXT"],hint:"Text, CSV or Excel files"}
+ video:{label:"Video & Audio",outputs:["MP4","MOV","MKV","WEBM","MP3","WAV","OGG","AAC"],hint:"MP4, MOV, MKV, WebM, MP3, WAV, OGG or AAC"},
+ data:{label:"Data",outputs:["CSV","XLSX","TXT","JSON","XML"],hint:"Text, CSV, Excel, JSON or XML files"}
 };
-var CAT_INPUTS={document:["pdf","docx","txt","md","pptx"],image:["png","jpg","jpeg","webp","gif","bmp","avif","heic","heif","tif","tiff"],video:["mp4","mov","mkv","webm","avi"],data:["txt","csv","xlsx","xls"]};
+var CAT_INPUTS={document:["pdf","docx","txt","md","pptx","html","htm"],image:["png","jpg","jpeg","webp","gif","bmp","avif","heic","heif","tif","tiff","svg"],video:["mp4","mov","mkv","webm","avi","wav","ogg","aac"],data:["txt","csv","xlsx","xls","json","xml"]};
 
 function canConvert(inp,out){
  inp=inp.toLowerCase();out=out.toLowerCase();
  if(inp===out)return "That is already a "+out.toUpperCase()+" file — choose a different output.";
- var docIn=["pdf","docx","txt","md","pptx"],docOut=["pdf","docx","txt","md","pptx","jpg","png"];
- if(docIn.indexOf(inp)>=0){if(docOut.indexOf(out)<0)return "Documents cannot be converted to "+out.toUpperCase()+" here.";if(inp==="docx"&&out==="pptx")return "Word to PowerPoint is not a direct conversion — convert Word to text first, then text to PPTX.";if(inp==="pptx"&&out==="docx")return "PowerPoint to Word is not a direct conversion — convert PPTX to text first, then text to Word.";if(inp==="pptx"&&out==="jpg")return "PowerPoint to image is not supported yet — convert PPTX to PDF/text first.";if(inp==="docx"&&out==="jpg")return "Word to image is not supported yet — convert Word to PDF first, then PDF to JPG.";return null}
- var imgIn=["png","jpg","jpeg","webp","gif","bmp","avif","heic","heif","tif","tiff"],imgOut=["png","jpg","webp","gif","bmp","avif","pdf"];
- if(imgIn.indexOf(inp)>=0){if(imgOut.indexOf(out)<0)return "Images cannot be converted to "+out.toUpperCase()+" here.";return null}
- var vidIn=["mp4","mov","mkv","webm","avi"],vidOut=["mp3","mp4","mkv"];
- if(vidIn.indexOf(inp)>=0){if(vidOut.indexOf(out)<0)return "Video cannot be converted to "+out.toUpperCase()+" here.";if(out==="mp3"&&vidIn.indexOf(inp)<0)return null;return null}
- var datIn=["txt","csv","xlsx","xls"],datOut=["csv","xlsx","txt"];
- if(datIn.indexOf(inp)>=0){if(datOut.indexOf(out)<0)return "Data files cannot be converted to "+out.toUpperCase()+" here.";return null}
+ var catOf=function(x){
+  if(["pdf","docx","txt","md","pptx","html","htm"].indexOf(x)>=0)return "Documents";
+  if(["png","jpg","jpeg","webp","gif","bmp","avif","heic","heif","tif","tiff","svg"].indexOf(x)>=0)return "Images";
+  if(["mp4","mov","mkv","webm","avi","mp3","wav","ogg","aac"].indexOf(x)>=0)return "Video & Audio";
+  if(["csv","xlsx","xls","json","xml"].indexOf(x)>=0)return "Data";
+  return null;
+ };
+ var cross=function(){ var oc=catOf(out); return oc ? "A "+inp.toUpperCase()+" file cannot be converted to "+out.toUpperCase()+" here — "+out.toUpperCase()+" belongs to the "+oc+" category. Use that category instead." : "That output is not supported here."; };
+ var docIn=["pdf","docx","txt","md","pptx","html","htm"],docOut=["pdf","docx","txt","md","pptx","html","jpg","png"];
+ if(docIn.indexOf(inp)>=0){
+  if(docOut.indexOf(out)<0)return cross();
+  if(inp==="docx"&&out==="pptx")return "Word to PowerPoint is not a direct conversion — convert Word to text first, then text to PPTX.";
+  if(inp==="pptx"&&out==="docx")return "PowerPoint to Word is not a direct conversion — convert PPTX to text first, then text to Word.";
+  if(inp==="pptx"&&out==="jpg")return "PowerPoint to image is not supported yet — convert PPTX to PDF/text first.";
+  if(inp==="docx"&&out==="jpg")return "Word to image is not supported yet — convert Word to PDF first, then PDF to JPG.";
+  if((inp==="html"||inp==="htm")&&(out==="jpg"||out==="png"))return "HTML to image is not supported yet — convert HTML to PDF first, then PDF to JPG/PNG.";
+  if((out==="jpg"||out==="png")&&inp!=="pdf")return "Only PDF can be converted directly to an image here.";
+  return null}
+ var imgIn=["png","jpg","jpeg","webp","gif","bmp","avif","heic","heif","tif","tiff","svg"],imgOut=["png","jpg","webp","gif","bmp","avif","pdf"];
+ if(imgIn.indexOf(inp)>=0){
+  if(out==="svg")return "Tracing a raster image to SVG is not supported — SVG is an input only here. Choose PNG, JPG, WebP or PDF instead.";
+  if(imgOut.indexOf(out)<0)return cross();
+  return null}
+ var vidIn=["mp4","mov","mkv","webm","avi","wav","ogg","aac"],vidOut=["mp4","mov","mkv","webm","mp3","wav","ogg","aac"];
+ var audioIn=["wav","ogg","aac"];
+ if(vidIn.indexOf(inp)>=0){
+  if(vidOut.indexOf(out)<0)return cross();
+  if(audioIn.indexOf(inp)>=0&&["mp4","mov","mkv","webm"].indexOf(out)>=0)return "Audio cannot be turned into a video file — choose an audio output (MP3, WAV, OGG or AAC) instead.";
+  return null}
+ var datIn=["txt","csv","xlsx","xls","json","xml"],datOut=["csv","xlsx","txt","json","xml"];
+ if(datIn.indexOf(inp)>=0){if(datOut.indexOf(out)<0)return cross();return null}
  return "Unsupported input type: ."+inp+". Try a PDF, Word, image, video, text, CSV or Excel file.";
 }
 
@@ -74,6 +97,20 @@ function makePptxBlob(text){
 }
 function mdFromText(text){
  return String(text).split(/\r?\n/).map(function(l){return l.trim()?l:""}).join("\n");
+}
+function stripHtmlText(html){
+ var t=String(html||"").replace(/<script[\s\S]*?<\/script>/gi,"").replace(/<style[\s\S]*?<\/style>/gi,"");
+ t=t.replace(/<(br|\/p|\/div|\/li|\/tr|\/h[1-6])[^>]*>/gi,"\n").replace(/<li[^>]*>/gi,"\n• ");
+ t=t.replace(/<[^>]+>/g,"");
+ var ta=document.createElement("textarea");ta.innerHTML=t;return ta.value;
+}
+function htmlDocFromText(text,title){
+ var lines=String(text).split(/\r?\n/);var body=lines.map(function(l){
+  if(l.indexOf("# ")===0)return "<h1>"+esc(l.slice(2))+"</h1>";
+  if(l.indexOf("## ")===0)return "<h2>"+esc(l.slice(3))+"</h2>";
+  return l.trim()?"<p>"+esc(l)+"</p>":"";
+ }).join("\n");
+ return "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>"+esc(title||"Converted document")+"</title>\n</head>\n<body>\n"+body+"\n</body>\n</html>\n";
 }
 
 /* ---------- Document converters ---------- */
@@ -127,6 +164,16 @@ function imageConvert(file,out){
    return window.heic2any({blob:file,toType:"image/png"});
   }).catch(function(){throw new Error("HEIC could not be decoded in this browser. On iPhone/iPad, open the photo in Safari, or export it as JPG/PNG first and try again.")});
  }
+ if(inp==="svg"){
+  work=work.then(function(blob){return blob.text().then(function(txt){
+   var w=txt.match(/width=["']([0-9.]+)/i), h=txt.match(/height=["']([0-9.]+)/i), vb=txt.match(/viewBox=["']([0-9.\s,-]+)["']/i);
+   if(!w||!h){
+    var vw=1024, vh=1024; if(vb){ var parts=vb[1].trim().split(/[\s,]+/); if(parts.length>=4){ vw=parseFloat(parts[2])||1024; vh=parseFloat(parts[3])||1024; } }
+    txt=txt.replace(/<svg([^>]*)>/i, function(m,attrs){ return "<svg"+attrs+(w?"":" width=\""+vw+"\"")+(h?"":" height=\""+vh+"\"")+">"; });
+   }
+   return new Blob([txt],{type:"image/svg+xml"});
+  })});
+ }
  return work.then(function(blob){
   if(out==="pdf"){return loadImageBlob(blob).then(function(img){return loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js").then(function(){var JSPDF=window.jspdf.jsPDF;var doc=new JSPDF({unit:"px",format:[img.width,img.height]});var c=document.createElement("canvas");c.width=img.width;c.height=img.height;c.getContext("2d").drawImage(img,0,0);return new Promise(function(res){c.toBlob(function(b){var r=new FileReader();r.onload=function(){doc.addImage(r.result,"JPEG",0,0,img.width,img.height);res(doc.output("blob"))};r.readAsDataURL(b)},"image/jpeg",0.92)})})})}
   return loadImageBlob(blob).then(function(img){
@@ -160,18 +207,71 @@ function dataConvert(file,out,buf,text){
  if(inp==="csv"&&out==="txt"){return Promise.resolve(new Blob([text],{type:"text/plain"}))}
  if((inp==="xlsx"||inp==="xls")&&out==="csv"){return ensureXlsx().then(function(){var wb=XLSX.read(buf,{type:"array"});var ws=wb.Sheets[wb.SheetNames[0]];return new Blob([XLSX.utils.sheet_to_csv(ws)],{type:"text/csv"})})}
  if((inp==="xlsx"||inp==="xls")&&out==="txt"){return ensureXlsx().then(function(){var wb=XLSX.read(buf,{type:"array"});var ws=wb.Sheets[wb.SheetNames[0]];var rows=XLSX.utils.sheet_to_json(ws,{header:1});return new Blob([rows.map(function(r){return r.join("\t")}).join("\n")],{type:"text/plain"})})}
+ if(inp==="txt"&&out==="json"){ var jl=String(text).split(/\r?\n/).filter(function(l){return l.trim()}); return Promise.resolve(new Blob([JSON.stringify(jl,null,2)],{type:"application/json"})); }
+ if(inp==="txt"&&out==="xml"){ var xl=String(text).split(/\r?\n/).filter(function(l){return l.trim()}); return Promise.resolve(new Blob([rowsToXml(xl.map(function(l){return {value:l}}),["value"])],{type:"application/xml"})); }
+ if(inp==="csv"&&out==="json"){ var crow=csvParse(text); if(!crow.length)throw new Error("This CSV file is empty."); var hdr=crow[0]; var objs=crow.slice(1).filter(function(r){return r.join("").trim()}).map(function(r){ var o={}; hdr.forEach(function(h,i){ o[h||("col"+(i+1))]=r[i]==null?"":r[i]; }); return o; }); return Promise.resolve(new Blob([JSON.stringify(objs,null,2)],{type:"application/json"})); }
+ if(inp==="csv"&&out==="xml"){ var crow2=csvParse(text); if(!crow2.length)throw new Error("This CSV file is empty."); return Promise.resolve(new Blob([rowsToXml(crow2.slice(1),crow2[0])],{type:"application/xml"})); }
+ if((inp==="xlsx"||inp==="xls")&&out==="json"){ return ensureXlsx().then(function(){ var wb=XLSX.read(buf,{type:"array"}); var ws=wb.Sheets[wb.SheetNames[0]]; var objs=XLSX.utils.sheet_to_json(ws,{defval:""}); return new Blob([JSON.stringify(objs,null,2)],{type:"application/json"}); }); }
+ if((inp==="xlsx"||inp==="xls")&&out==="xml"){ return ensureXlsx().then(function(){ var wb=XLSX.read(buf,{type:"array"}); var ws=wb.Sheets[wb.SheetNames[0]]; var aoa=XLSX.utils.sheet_to_json(ws,{header:1,defval:""}); if(!aoa.length)throw new Error("This spreadsheet is empty."); return new Blob([rowsToXml(aoa.slice(1),aoa[0])],{type:"application/xml"}); }); }
+ if(inp==="json"&&out==="csv"){ var jdata=JSON.parse(text); var jrows=jsonToRows(jdata); if(!jrows.length)throw new Error("This JSON file has no rows."); var jhdr=[]; jrows.forEach(function(r){ Object.keys(r).forEach(function(k){ if(jhdr.indexOf(k)<0)jhdr.push(k); }); }); var jcsv=[jhdr.map(csvEscape).join(",")].concat(jrows.map(function(r){ return jhdr.map(function(h){ return csvEscape(r[h]); }).join(","); })).join("\n"); return Promise.resolve(new Blob([jcsv],{type:"text/csv"})); }
+ if(inp==="json"&&out==="txt"){ var jdata2=JSON.parse(text); var jrows2=jsonToRows(jdata2); var jhdr2=[]; jrows2.forEach(function(r){ Object.keys(r).forEach(function(k){ if(jhdr2.indexOf(k)<0)jhdr2.push(k); }); }); var jtxt=jrows2.length&&jhdr2.length?([jhdr2.join("\t")].concat(jrows2.map(function(r){ return jhdr2.map(function(h){ return r[h]==null?"":r[h]; }).join("\t"); })).join("\n")):JSON.stringify(jdata2,null,2); return Promise.resolve(new Blob([jtxt],{type:"text/plain"})); }
+ if(inp==="json"&&out==="xlsx"){ return ensureXlsx().then(function(){ var jdata3=JSON.parse(text); var jrows3=jsonToRows(jdata3); var aoa3=jrows3.map(function(r){ return Array.isArray(r)?r:Object.keys(r).map(function(k){ return r[k]; }); }); if(jrows3.length&&!Array.isArray(jrows3[0])) aoa3=[Object.keys(jrows3[0])].concat(aoa3); var ws=XLSX.utils.aoa_to_sheet(aoa3); var wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Sheet1"); return new Blob([XLSX.write(wb,{bookType:"xlsx",type:"array"})],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}); }); }
+ if(inp==="json"&&out==="xml"){ var jdata4=JSON.parse(text); var jrows4=jsonToRows(jdata4); return Promise.resolve(new Blob([rowsToXml(jrows4)],{type:"application/xml"})); }
+ if(inp==="xml"&&out==="csv"){ var xr=xmlToRows(text); var xcsv=[xr.headers.map(csvEscape).join(",")].concat(xr.rows.map(function(r){ return xr.headers.map(function(h){ return csvEscape(r[h]); }).join(","); })).join("\n"); return Promise.resolve(new Blob([xcsv],{type:"text/csv"})); }
+ if(inp==="xml"&&out==="txt"){ var xr2=xmlToRows(text); var xtxt=[xr2.headers.join("\t")].concat(xr2.rows.map(function(r){ return xr2.headers.map(function(h){ return r[h]==null?"":r[h]; }).join("\t"); })).join("\n"); return Promise.resolve(new Blob([xtxt],{type:"text/plain"})); }
+ if(inp==="xml"&&out==="json"){ var xr3=xmlToRows(text); return Promise.resolve(new Blob([JSON.stringify(xr3.rows,null,2)],{type:"application/json"})); }
+ if(inp==="xml"&&out==="xlsx"){ return ensureXlsx().then(function(){ var xr4=xmlToRows(text); var aoa4=[xr4.headers].concat(xr4.rows.map(function(r){ return xr4.headers.map(function(h){ return r[h]==null?"":r[h]; }); })); var ws=XLSX.utils.aoa_to_sheet(aoa4); var wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Sheet1"); return new Blob([XLSX.write(wb,{bookType:"xlsx",type:"array"})],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}); }); }
  if(inp==="txt"&&out==="txt")return Promise.resolve(new Blob([text],{type:"text/plain"}));
  return Promise.reject(new Error("This data conversion is not supported."));
 }
 
+/* ---------- Data helpers: JSON / XML ---------- */
+function xmlEscape(v){return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+function xmlTag(n){var t=String(n||"col").replace(/[^A-Za-z0-9_]/g,"_");if(/^[0-9]/.test(t))t="c_"+t;return t||"col"}
+function rowsToXml(rows,headers){
+ var out=["<?xml version=\"1.0\" encoding=\"UTF-8\"?>","<rows>"];
+ rows.forEach(function(r){
+  out.push(" <row>");
+  if(Array.isArray(r)){ r.forEach(function(v,i){ var tag=headers&&headers[i]?xmlTag(headers[i]):"col"+(i+1); out.push("  <"+tag+">"+xmlEscape(v)+"</"+tag+">"); }); }
+  else { Object.keys(r).forEach(function(k){ out.push("  <"+xmlTag(k)+">"+xmlEscape(r[k])+"</"+xmlTag(k)+">"); }); }
+  out.push(" </row>");
+ });
+ out.push("</rows>"); return out.join("\n");
+}
+function xmlToRows(text){
+ var doc=new DOMParser().parseFromString(String(text),"text/xml");
+ if(doc.getElementsByTagName("parsererror").length) throw new Error("This XML file could not be parsed — check that its tags are properly closed.");
+ var rowEls=[]; ["row","record","item","entry"].forEach(function(tag){ var els=doc.getElementsByTagName(tag); for(var i=0;i<els.length;i++) rowEls.push(els[i]); });
+ if(!rowEls.length){
+  var kids=doc.documentElement?doc.documentElement.children:null;
+  if(kids&&kids.length){ for(var j=0;j<kids.length;j++) rowEls.push(kids[j]); }
+ }
+ if(!rowEls.length) throw new Error("No rows were found in this XML file.");
+ var headers=[], rows=[];
+ rowEls.forEach(function(el){
+  var obj={}, kids2=el.children;
+  if(kids2&&kids2.length){ for(var k=0;k<kids2.length;k++){ var tag=kids2[k].tagName; if(headers.indexOf(tag)<0)headers.push(tag); obj[tag]=kids2[k].textContent; } }
+  else { obj={value:el.textContent}; if(headers.indexOf("value")<0)headers.push("value"); }
+  rows.push(obj);
+ });
+ return {headers:headers, rows:rows};
+}
+function jsonToRows(data){
+ if(Array.isArray(data)) return data;
+ if(data&&typeof data==="object"){ if(Array.isArray(data.rows)) return data.rows; return [data]; }
+ return [{value:data}];
+}
 /* ---------- Video (ffmpeg.wasm 0.12, SINGLE-THREAD core: no SharedArrayBuffer, no COOP/COEP) ---------- */
 var ffmpegInst=null, ffmpegLoad=null;
 function loadFFmpegST(progress){
  if(ffmpegInst) return Promise.resolve(ffmpegInst);
  if(ffmpegLoad) return ffmpegLoad;
  ffmpegLoad=(async function(){
-   var mod=await import("https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js");
-   var util=await import("https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.2/dist/esm/index.js");
+   /* Vendored locally: import.meta.url is same-origin, so the ffmpeg
+      Worker (new URL("./worker.js", import.meta.url)) can be constructed.
+      Only core/wasm are still fetched as blobs from the CDN. */
+   var mod=await import("/assets/ffmpeg/index.js");
+   var util=await import("/assets/ffmpeg-util/index.js");
    var ff=new mod.FFmpeg();
    ff.on("progress",function(e){ if(e&&e.progress!=null&&progress) progress(Math.round(e.progress*100)); });
    var base="https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm";
@@ -187,7 +287,12 @@ function videoConvert(file,out,progress){
    await ff.writeFile(inName, new Uint8Array(await file.arrayBuffer()));
    var args=["-i",inName];
    if(out==="mp3") args.push("-vn","-c:a","libmp3lame","-q:a","2");
+   else if(out==="wav") args.push("-vn","-c:a","pcm_s16le");
+   else if(out==="ogg") args.push("-vn","-c:a","libvorbis");
+   else if(out==="aac") args.push("-vn","-c:a","aac");
    else if(out==="mp4") args.push("-c:v","libx264","-c:a","aac","-movflags","+faststart");
+   else if(out==="mov") args.push("-c:v","libx264","-c:a","aac","-movflags","+faststart");
+   else if(out==="webm") args.push("-c:v","libvpx-vp9","-crf","30","-b:v","0","-c:a","libopus");
    else if(out==="mkv") args.push("-c","copy");
    args.push(outName);
    var code=await ff.exec(args);
@@ -195,7 +300,8 @@ function videoConvert(file,out,progress){
    var d=await ff.readFile(outName);
    try{ await ff.deleteFile(inName); await ff.deleteFile(outName); }catch(e){}
    if(!d||d.length===0) throw new Error("Video conversion produced an empty file.");
-   return new Blob([d],{type:out==="mp3"?"audio/mpeg":"video/"+out});
+   var mimeMap={mp3:"audio/mpeg",wav:"audio/wav",ogg:"audio/ogg",aac:"audio/aac",mp4:"video/mp4",mov:"video/quicktime",mkv:"video/x-matroska",webm:"video/webm"};
+   return new Blob([d],{type:mimeMap[out]||("video/"+out)});
  }).catch(function(e){
    var msg=e&&e.message?e.message:"video engine failed to load";
    if(/SharedArrayBuffer/i.test(msg)) msg="Video engine could not start on this page. Reload, then try desktop Chrome with a smaller file.";
@@ -207,7 +313,7 @@ function videoConvert(file,out,progress){
 function convertFile(file,out,progress){
  var inp=extOf(file.name);var bad=canConvert(inp,out);if(bad)return Promise.reject(new Error(bad));
  var base=baseOf(file.name);out=out.toLowerCase();
- var docIn=["pdf","docx","txt","md","pptx"];
+ var docIn=["pdf","docx","txt","md","pptx","html","htm"];
  if(docIn.indexOf(inp)>=0){
   if(out==="jpg"||out==="png"){
    if(inp!=="pdf")return Promise.reject(new Error("Only PDF can be converted directly to an image here."));
@@ -220,8 +326,10 @@ function convertFile(file,out,progress){
   if(inp==="pdf")textP=file.arrayBuffer().then(function(b){return pdfToText(b)});
   else if(inp==="docx")textP=file.arrayBuffer().then(function(b){return docxConvert(b,"txt")});
   else if(inp==="pptx")textP=file.arrayBuffer().then(function(b){return pptxToText(b)});
+  else if(inp==="html"||inp==="htm")textP=file.text().then(function(t){return stripHtmlText(t)});
   else textP=file.text();
   textP=textP.then(function(tt){ if(!String(tt||"").trim()){ if(inp==="pdf") throw new Error("No extractable text found — this looks like a scanned PDF. Try a text-based PDF, or convert the PDF to an image instead."); throw new Error("No text could be extracted from this file. It may be empty or in an unsupported format."); } return tt; });
+  if(out==="html")return textP.then(function(t){return {blob:new Blob([htmlDocFromText(t,base)],{type:"text/html"}),name:base+".html"}});
   if(out==="txt")return textP.then(function(t){return {blob:new Blob([t],{type:"text/plain"}),name:base+".txt"}});
   if(out==="md"){
    if(inp==="docx")return file.arrayBuffer().then(function(b){return docxConvert(b,"md")}).then(function(t){if(!String(t||"").trim())throw new Error("No text could be extracted from this Word file.");return {blob:new Blob([t],{type:"text/markdown"}),name:base+".md"}});
@@ -232,14 +340,14 @@ function convertFile(file,out,progress){
   if(out==="pdf")return textP.then(function(t){return makePdfBlob(t).then(function(b){return {blob:b,name:base+".pdf"}})});
   if(out==="pptx")return textP.then(function(t){return makePptxBlob(t).then(function(b){return {blob:b,name:base+".pptx"}})});
  }
- var imgIn=["png","jpg","jpeg","webp","gif","bmp","avif","heic","heif","tif","tiff"];
+ var imgIn=["png","jpg","jpeg","webp","gif","bmp","avif","heic","heif","tif","tiff","svg"];
  if(imgIn.indexOf(inp)>=0){
   if(inp==="tif"||inp==="tiff"){/* try canvas decode; imageConvert will give a clear error if it fails */ }
   return imageConvert(file,out).then(function(b){return {blob:b,name:base+"."+out}}).catch(function(e){ if(/decode|HEIC/i.test(e.message||"")) throw e; throw new Error("This image could not be converted: "+(e.message||"unknown error")+" Try a PNG or JPG file and tap Retry."); });
  }
- var vidIn=["mp4","mov","mkv","webm","avi"];
+ var vidIn=["mp4","mov","mkv","webm","avi","wav","ogg","aac"];
  if(vidIn.indexOf(inp)>=0){return videoConvert(file,out,progress||function(){}).then(function(b){return {blob:b,name:base+"."+out}})}
- var datIn=["txt","csv","xlsx","xls"];
+ var datIn=["txt","csv","xlsx","xls","json","xml"];
  if(datIn.indexOf(inp)>=0){
   return Promise.all([file.arrayBuffer(),file.text().catch(function(){return ""})]).then(function(parts){return dataConvert(file,out,parts[0],parts[1])}).then(function(b){return {blob:b,name:base+"."+out}}).catch(function(e){ if(/not supported/i.test(e.message||"")) throw e; throw new Error("This spreadsheet or data file could not be read — it may be damaged or in an unsupported format. Check the file and tap Retry."); });
  }
@@ -321,7 +429,7 @@ function buildWheel(box){
  var state={file:null,lastFmt:null};
  function setStatus(msg,kind){var el=box.querySelector(".status");if(el){el.textContent=msg;el.className="status "+(kind||"")}}
  function setProgress(p){var bar=box.querySelector(".progress i");if(bar)bar.style.width=p+"%"}
- function hideDownload(){var dl=box.querySelector(".download");if(dl){dl.hidden=true;dl.removeAttribute("href")}}
+ function hideDownload(){var dls=box.querySelectorAll(".download");dls.forEach(function(dl){dl.hidden=true;dl.style.display="none";dl.removeAttribute("href")})}
  function showActions(show){var a=box.querySelector(".err-actions");if(a)a.hidden=!show}
  function showError(msg){ setProgress(0); setStatus(msg,"err"); hideDownload(); showActions(true); __arkConverting=false; }
  var centre=document.createElement("div");centre.className="centre";
@@ -356,7 +464,7 @@ function buildWheel(box){
    if(!res.blob||res.blob.size===0){ showError("Conversion produced an empty file — try a different file or format."); return; }
    setProgress(100);setStatus("Done — "+res.name+" is ready.","ok"); showActions(false);
    var dl=box.querySelector(".download");
-   if(dl){dl.hidden=false;dl.textContent="Download "+res.name;dl.onclick=function(e){e.preventDefault();downloadBlob(res.blob,res.name)}}
+   if(dl){dl.hidden=false;dl.style.display="";dl.textContent="Download "+res.name;dl.onclick=function(e){e.preventDefault();downloadBlob(res.blob,res.name)}}
   }).catch(function(err){
    __arkConverting=false;
    var msg=err&&err.message?err.message:"Conversion failed.";
@@ -410,7 +518,7 @@ document.addEventListener("DOMContentLoaded",function(){
    var stage=document.querySelector(".stage2");if(stage)stage.hidden=true;
    if(dz)dz.hidden=false;
    if(chip)chip.textContent="";
-   var dl=box.querySelector(".download");if(dl)dl.hidden=true;
+   var dl=box.querySelector(".download");if(dl){dl.hidden=true;dl.style.display="none"}
    var st=box.querySelector(".status");if(st){st.textContent="Drag the file onto a format.";st.className="status"}
    var ea=box.querySelector(".err-actions");if(ea)ea.hidden=true;
    var cen=box.querySelector(".centre");if(cen){var s2=cen.querySelector(".small");if(s2)s2.textContent="Release the file on a format";cen.setAttribute("draggable","false")}
@@ -422,8 +530,8 @@ document.addEventListener("DOMContentLoaded",function(){
  if(mw){
   mw.innerHTML="";
   buildWedgeSVG(mw,[
-   {label:"Documents",value:"document"},{label:"Images",value:"image"},
-   {label:"Video & Audio",value:"video"},{label:"Data",value:"data"}
+   {label:"\u25a4 Documents",value:"document"},{label:"\u25cd Images",value:"image"},
+   {label:"\u25b6 Video & Audio",value:"video"},{label:"\u25a6 Data",value:"data"}
   ],{onSelect:function(v){ location.href="/tools.html?cat="+v; },onDrop:function(){}});
   var mc=document.createElement("div");mc.className="mw-centre";mc.textContent="Choose a category";mw.appendChild(mc);
  }

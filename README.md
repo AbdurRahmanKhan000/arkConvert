@@ -63,32 +63,37 @@ Most online converters upload your documents, images, videos and spreadsheets to
 
 | From | To |
 | :--- | :--- |
-| PDF | TXT, Word (DOCX), Markdown, PowerPoint (PPTX), JPG, PNG |
-| Word (DOCX) | TXT, Markdown, PDF |
-| Text / Markdown | Word (DOCX), PDF, PowerPoint (PPTX) |
-| PowerPoint (PPTX) | TXT, Markdown |
+| PDF | TXT, Word (DOCX), Markdown, PowerPoint (PPTX), HTML, JPG, PNG |
+| Word (DOCX) | TXT, Markdown, PDF, HTML |
+| Text / Markdown | Word (DOCX), PDF, PowerPoint (PPTX), HTML |
+| PowerPoint (PPTX) | TXT, Markdown, HTML |
+| HTML | TXT, Markdown, Word (DOCX), PDF, PowerPoint (PPTX) |
 
 ### Images
 
 | From | To |
 | :--- | :--- |
-| PNG, JPG, WebP, GIF, BMP, AVIF, HEIC | PNG, JPG, WebP, GIF, BMP, AVIF, PDF |
+| PNG, JPG, WebP, GIF, BMP, AVIF, HEIC, SVG | PNG, JPG, WebP, GIF, BMP, AVIF, PDF |
+
+SVG is an input only — raster images are not traced to SVG.
 
 ### Video & Audio
 
 | From | To |
 | :--- | :--- |
-| MP4, MOV, MKV, WebM | MP3, MP4, MKV |
+| MP4, MOV, MKV, WebM, WAV, OGG, AAC | MP4, MOV, MKV, WebM, MP3, WAV, OGG, AAC |
 
-Video uses a single-thread ffmpeg.wasm build, so it works without cross-origin isolation headers.
+Video uses a single-thread ffmpeg.wasm build vendored locally (`assets/ffmpeg/`), so its Worker is same-origin — it works without SharedArrayBuffer and without cross-origin isolation headers. Audio inputs (WAV, OGG, AAC) convert to audio only, never to video.
 
 ### Data
 
 | From | To |
 | :--- | :--- |
-| Text | CSV, Excel (XLSX) |
-| CSV | Excel (XLSX), Text |
-| Excel (XLSX) | CSV, Text |
+| Text | CSV, Excel (XLSX), JSON, XML |
+| CSV | Excel (XLSX), Text, JSON, XML |
+| Excel (XLSX) | CSV, Text, JSON, XML |
+| JSON | CSV, Excel (XLSX), Text, XML |
+| XML | CSV, Excel (XLSX), Text, JSON |
 
 ---
 
