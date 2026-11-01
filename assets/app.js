@@ -22,7 +22,7 @@ var CATS={
  video:{label:"Video & Audio",outputs:["MP4","MOV","MKV","WEBM","MP3","WAV","OGG","AAC"],hint:"MP4, MOV, MKV, WebM, MP3, WAV, OGG or AAC"},
  data:{label:"Data",outputs:["CSV","XLSX","TXT","JSON","XML"],hint:"Text, CSV, Excel, JSON or XML files"}
 };
-var CAT_INPUTS={document:["pdf","docx","txt","md","pptx","html","htm"],image:["png","jpg","jpeg","webp","gif","bmp","avif","heic","heif","tif","tiff","svg"],video:["mp4","mov","mkv","webm","avi","wav","ogg","aac"],data:["txt","csv","xlsx","xls","json","xml"]};
+var CAT_INPUTS={document:["pdf","docx","txt","md","pptx","html","htm"],image:["png","jpg","jpeg","webp","gif","bmp","avif","heic","heif","tif","tiff","svg"],video:["mp4","mov","mkv","webm","avi","mp3","wav","ogg","aac"],data:["txt","csv","xlsx","xls","json","xml"]};
 
 function canConvert(inp,out){
  inp=inp.toLowerCase();out=out.toLowerCase();
@@ -50,8 +50,8 @@ function canConvert(inp,out){
   if(out==="svg")return "Tracing a raster image to SVG is not supported — SVG is an input only here. Choose PNG, JPG, WebP or PDF instead.";
   if(imgOut.indexOf(out)<0)return cross();
   return null}
- var vidIn=["mp4","mov","mkv","webm","avi","wav","ogg","aac"],vidOut=["mp4","mov","mkv","webm","mp3","wav","ogg","aac"];
- var audioIn=["wav","ogg","aac"];
+ var vidIn=["mp4","mov","mkv","webm","avi","mp3","wav","ogg","aac"],vidOut=["mp4","mov","mkv","webm","mp3","wav","ogg","aac"];
+ var audioIn=["mp3","wav","ogg","aac"];
  if(vidIn.indexOf(inp)>=0){
   if(vidOut.indexOf(out)<0)return cross();
   if(audioIn.indexOf(inp)>=0&&["mp4","mov","mkv","webm"].indexOf(out)>=0)return "Audio cannot be turned into a video file — choose an audio output (MP3, WAV, OGG or AAC) instead.";
@@ -345,7 +345,7 @@ function convertFile(file,out,progress){
   if(inp==="tif"||inp==="tiff"){/* try canvas decode; imageConvert will give a clear error if it fails */ }
   return imageConvert(file,out).then(function(b){return {blob:b,name:base+"."+out}}).catch(function(e){ if(/decode|HEIC/i.test(e.message||"")) throw e; throw new Error("This image could not be converted: "+(e.message||"unknown error")+" Try a PNG or JPG file and tap Retry."); });
  }
- var vidIn=["mp4","mov","mkv","webm","avi","wav","ogg","aac"];
+ var vidIn=["mp4","mov","mkv","webm","avi","mp3","wav","ogg","aac"];
  if(vidIn.indexOf(inp)>=0){return videoConvert(file,out,progress||function(){}).then(function(b){return {blob:b,name:base+"."+out}})}
  var datIn=["txt","csv","xlsx","xls","json","xml"];
  if(datIn.indexOf(inp)>=0){
@@ -372,7 +372,7 @@ function buildWedgeSVG(container, segments, opts){
  var rotor=document.createElementNS(NS,"g"), labels=document.createElementNS(NS,"g");
  svg.appendChild(rotor); svg.appendChild(labels); container.appendChild(svg);
  var cx=200, cy=200, rM=143, n=segments.length, texts=[];
- var state={angle:0,last:null,hover:false,reduced:!!(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches)};
+ var state={angle:0,last:null,hover:false,stopped:false,reduced:!!(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches)};
  segments.forEach(function(seg,i){
   var a0=(-Math.PI/2)+i*(2*Math.PI/n), a1=a0+(2*Math.PI/n);
   var path=document.createElementNS(NS,"path");
@@ -402,7 +402,7 @@ function buildWedgeSVG(container, segments, opts){
  function frame(ts){
   if(state.last==null) state.last=ts;
   var dt=(ts-state.last)/1000; state.last=ts;
-  var paused=state.hover||__arkDragging||__arkConverting||state.reduced;
+  var paused=state.hover||__arkDragging||__arkConverting||state.reduced||state.stopped;
   if(!paused) state.angle+=dt*(360/105); /* ~105 seconds per revolution: slow, professional */
   rotor.setAttribute("transform","rotate("+state.angle.toFixed(2)+" 200 200)");
   texts.forEach(function(item){
@@ -414,7 +414,9 @@ function buildWedgeSVG(container, segments, opts){
   requestAnimationFrame(frame);
  }
  requestAnimationFrame(frame);
- return {svg:svg};
+ /* v5: stop() freezes the angle permanently; the frame keeps running so
+    wedge labels are re-rendered upright at that frozen angle every frame. */
+ return {svg:svg,stop:function(){ state.stopped=true; }};
 }
 
 /* Stage 1: drop zone only. Stage 2 (after a file arrives): conversion wheel
@@ -427,6 +429,7 @@ function buildWheel(box){
  var wheel=box.querySelector(".wheel");if(!wheel)return;
  wheel.innerHTML="";
  var state={file:null,lastFmt:null};
+ var wheelApi=null; /* v5: set once the conversion wheel is built; setFile stops it */
  function setStatus(msg,kind){var el=box.querySelector(".status");if(el){el.textContent=msg;el.className="status "+(kind||"")}}
  function setProgress(p){var bar=box.querySelector(".progress i");if(bar)bar.style.width=p+"%"}
  function hideDownload(){var dls=box.querySelectorAll(".download");dls.forEach(function(dl){dl.hidden=true;dl.style.display="none";dl.removeAttribute("href")})}
@@ -441,6 +444,10 @@ function buildWheel(box){
  centre.addEventListener("drop",function(e){ e.preventDefault(); if(e.dataTransfer.files&&e.dataTransfer.files[0]){ setFile(e.dataTransfer.files[0]); } else if(state.file){ setStatus("Release the file on a format segment, not the centre.","err"); } });
  function setFile(f){
   state.file=f;box._arkFile=f;
+  /* v5: once a file arrives the wheel stops rotating so a drag lands
+     exactly on the aimed segment; it stays stopped on file change/replace
+     (Change file never resumes it, and the next setFile stops it again). */
+  if(wheelApi&&wheelApi.stop) wheelApi.stop();
   var chip=document.querySelector(".file-chip");if(chip)chip.textContent=f.name+" • "+fmtSize(f.size);
   var stage=document.querySelector(".stage2");if(stage)stage.hidden=false;
   var dz=document.querySelector(".dropzone");if(dz)dz.hidden=true;
@@ -451,9 +458,9 @@ function buildWheel(box){
  }
  function doConvert(fmt){
   if(!state.file){setStatus("Drop or browse for a file first, then drag it onto "+fmt+".","err");return}
-  if(state.file.size===0){showError("That file is empty (0 bytes) — choose a different file.");return}
   var inp=extOf(state.file.name);
   var allowed=CAT_INPUTS[cat]||[];
+  if(state.file.size===0){showError("That file is empty (0 bytes) — choose a different file. This page accepts: "+allowed.map(function(x){return "."+x.toUpperCase()}).join(", ")+".");return}
   if(allowed.length&&allowed.indexOf(inp)<0){showError("Wrong file type for "+cfg.label+". This page accepts: "+allowed.map(function(x){return "."+x.toUpperCase()}).join(", ")+".");return}
   var bad=canConvert(inp,fmt);
   if(bad){showError(bad);return}
@@ -474,7 +481,7 @@ function buildWheel(box){
   });
  }
  var segs=cfg.outputs.map(function(fmt){ return {label:fmt,value:fmt,active:(preset===fmt)}; });
- buildWedgeSVG(wheel, segs, {
+ wheelApi=buildWedgeSVG(wheel, segs, {
   onSelect:function(fmt){ doConvert(fmt); },
   onDrop:function(fmt,e){ if(e.dataTransfer.files&&e.dataTransfer.files[0]){ setFile(e.dataTransfer.files[0]); doConvert(fmt); } else if(state.file){ doConvert(fmt); } }
  });
