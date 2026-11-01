@@ -228,7 +228,10 @@ function convertFile(file,out,progress){
  return Promise.reject(new Error("Unsupported file type: ."+inp));
 }
 
-/* ---------- Wheel UI ---------- */
+/* ---------- Wheel UI: two-stage flow ---------- */
+/* Stage 1: drop zone only. Stage 2 (after a file arrives): conversion wheel
+   + draggable file chip. Drag the chip onto a segment, tap a segment, or
+   drop a native file directly onto a segment. */
 function buildWheel(box){
  var cat=box.getAttribute("data-category")||"document";
  var preset=(box.getAttribute("data-preset")||"").toUpperCase();
@@ -236,65 +239,96 @@ function buildWheel(box){
  var wheel=box.querySelector(".wheel");if(!wheel)return;
  wheel.innerHTML="";
  var centre=document.createElement("div");centre.className="centre";
- centre.innerHTML='<div><strong>Drop a file here</strong><br><span class="small muted">'+esc(cfg.hint)+'</span></div><input type="file" aria-label="Choose a file"><div class="fileinfo small"></div>';
+ centre.innerHTML="<strong>"+esc(cfg.label)+"</strong><span class=\"small\">Release the file on a format</span>";
  wheel.appendChild(centre);
- var input=centre.querySelector("input");
- var info=centre.querySelector(".fileinfo");
  var state={file:null};
- function setFile(f){state.file=f;box._arkFile=f;info.textContent=f?f.name+" • "+fmtSize(f.size):"";setStatus(box,"File ready: "+f.name+". Now tap an output format on the wheel.","ok")}
- function setStatus(b,msg,kind){var el=b.querySelector(".status");if(el){el.textContent=msg;el.className="status "+(kind||"")}}
+ function setStatus(msg,kind){var el=box.querySelector(".status");if(el){el.textContent=msg;el.className="status "+(kind||"")}}
  function setProgress(p){var bar=box.querySelector(".progress i");if(bar)bar.style.width=p+"%"}
- input.addEventListener("change",function(){if(input.files[0])setFile(input.files[0])});
- centre.addEventListener("dragover",function(e){e.preventDefault();centre.classList.add("drag")});
- centre.addEventListener("dragleave",function(){centre.classList.remove("drag")});
- centre.addEventListener("drop",function(e){e.preventDefault();centre.classList.remove("drag");if(e.dataTransfer.files[0])setFile(e.dataTransfer.files[0])});
+ function setFile(f){
+  state.file=f;box._arkFile=f;
+  var chip=document.querySelector(".file-chip");if(chip)chip.textContent=f.name+" • "+fmtSize(f.size);
+  var stage=document.querySelector(".stage2");if(stage)stage.hidden=false;
+  var dz=document.querySelector(".dropzone");if(dz)dz.hidden=true;
+  setStatus("File ready — drag it onto a format, or tap a format.","ok");
+ }
+ function doConvert(fmt){
+  if(!state.file){setStatus("Drop or browse for a file first, then drag it onto "+fmt+".","err");return}
+  var bad=canConvert(extOf(state.file.name),fmt);
+  if(bad){setStatus(bad,"err");return}
+  setStatus("Converting to "+fmt+"…");setProgress(10);
+  convertFile(state.file,fmt,function(p){setProgress(p)}).then(function(res){
+   setProgress(100);setStatus("Done — "+res.name+" is ready.","ok");
+   var dl=box.querySelector(".download");
+   if(dl){dl.hidden=false;dl.textContent="Download "+res.name;dl.onclick=function(e){e.preventDefault();downloadBlob(res.blob,res.name)}}
+  }).catch(function(err){setProgress(0);setStatus(err&&err.message?err.message:"Conversion failed. Try a smaller file.","err")});
+ }
  cfg.outputs.forEach(function(fmt,i){
   var btn=document.createElement("button");btn.type="button";btn.className="seg"+(preset===fmt?" active":"");btn.textContent=fmt;
-  var ang=(-90+i*(360/cfg.outputs.length))*Math.PI/180;var x=50+40*Math.cos(ang);var y=50+40*Math.sin(ang);
-  btn.style.left=x+"%";btn.style.top=y+"%";
+  btn.style.animationDelay=(i*55)+"ms";
+  var ang=(-90+i*(360/cfg.outputs.length))*Math.PI/180;
+  btn.style.left=(50+40*Math.cos(ang))+"%";btn.style.top=(50+40*Math.sin(ang))+"%";
   btn.title="Convert to "+fmt;
   btn.addEventListener("click",function(){doConvert(fmt)});
-  btn.addEventListener("drop",function(e){e.preventDefault();if(e.dataTransfer.files[0]){setFile(e.dataTransfer.files[0]);doConvert(fmt)}});
-  btn.addEventListener("dragover",function(e){e.preventDefault()});
+  btn.addEventListener("dragover",function(e){e.preventDefault();btn.classList.add("drag-over")});
+  btn.addEventListener("dragleave",function(){btn.classList.remove("drag-over")});
+  btn.addEventListener("drop",function(e){
+   e.preventDefault();btn.classList.remove("drag-over");
+   if(e.dataTransfer.files&&e.dataTransfer.files[0]){setFile(e.dataTransfer.files[0]);doConvert(fmt)}
+   else if(state.file){doConvert(fmt)}
+  });
   wheel.appendChild(btn);
  });
- function doConvert(fmt){
-  if(!state.file){setStatus(box,"Choose or drop a file first, then tap "+fmt+".","err");return}
-  var bad=canConvert(extOf(state.file.name),fmt);
-  if(bad){setStatus(box,bad,"err");return}
-  setStatus(box,"Converting to "+fmt+"… this runs in your browser, so large videos take longer.");setProgress(10);
-  convertFile(state.file,fmt,function(p){setProgress(p)}).then(function(res){setProgress(100);setStatus(box,"Done — "+res.name+" is ready to download.","ok");var dl=box.querySelector(".download");if(dl){dl.style.display="inline-block";dl.textContent="Download "+res.name;dl.onclick=function(e){e.preventDefault();downloadBlob(res.blob,res.name)}}}).catch(function(err){setProgress(0);setStatus(box,err&&err.message?err.message:"Conversion failed. Try a smaller or text-based file.","err")});
- }
- box._arkConvert=doConvert;box._arkSetFile=setFile;
- if(preset){var note=box.querySelector(".preset-note");if(note)note.textContent="Preset: convert to "+preset+" — or tap any other format on the wheel."}
-}
-function initShiftWheel(){
- var overlay=document.createElement("div");overlay.id="shiftWheel";document.body.appendChild(overlay);
- var currentCat="document";
- document.addEventListener("click",function(e){var t=e.target.closest&&e.target.closest("[data-set-cat]");if(t)currentCat=t.getAttribute("data-set-cat")});
- document.addEventListener("dragover",function(e){
-  if(e.shiftKey){overlay.style.display="block";overlay.style.left=e.clientX+"px";overlay.style.top=e.clientY+"px";var cfg=CATS[currentCat]||CATS.document;
-   if(!overlay._built||overlay._cat!==currentCat){overlay.innerHTML="";cfg.outputs.forEach(function(fmt,i){var b=document.createElement("button");b.type="button";b.className="shift-seg";b.textContent=fmt;var ang=(-90+i*(360/cfg.outputs.length))*Math.PI/180;b.style.left=(50+38*Math.cos(ang))+"%";b.style.top=(50+38*Math.sin(ang))+"%";b.addEventListener("drop",function(ev){ev.preventDefault();overlay.style.display="none";var f=ev.dataTransfer.files[0];var box=document.querySelector(".wheel-box");if(f&&box&&box._arkSetFile){box._arkSetFile(f);box._arkConvert(fmt)}});b.addEventListener("dragover",function(ev){ev.preventDefault()});b.addEventListener("click",function(){var box=document.querySelector(".wheel-box");if(box&&box._arkConvert)box._arkConvert(fmt);overlay.style.display="none"});overlay.appendChild(b)});overlay._built=true;overlay._cat=currentCat}
-  }else{overlay.style.display="none"}
+ centre.addEventListener("dragover",function(e){e.preventDefault()});
+ centre.addEventListener("drop",function(e){
+  e.preventDefault();
+  if(e.dataTransfer.files&&e.dataTransfer.files[0]){setFile(e.dataTransfer.files[0])}
+  else if(state.file){setStatus("Release the file on a format segment, not the centre.","err")}
  });
- document.addEventListener("drop",function(){overlay.style.display="none"});
- document.addEventListener("dragleave",function(){/* keep overlay until drop; hidden on drop/dragover without Shift */});
+ box._arkConvert=doConvert;box._arkSetFile=setFile;
 }
 document.addEventListener("DOMContentLoaded",function(){
- $$(".wheel-box").forEach(buildWheel);
- $$(".tab").forEach(function(tab){tab.addEventListener("click",function(){
-   $$(".tab").forEach(function(t){t.classList.remove("active")});tab.classList.add("active");
-   var box=document.querySelector(".wheel-box");if(box){box.setAttribute("data-category",tab.getAttribute("data-set-cat"));box.setAttribute("data-preset","");buildWheel(box)}
- })});
- var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting)e.target.classList.add("in")})},{threshold:0.12});
- $$(".reveal").forEach(function(el){io.observe(el)});
- initShiftWheel();
+ var box=document.querySelector(".wheel-box");
+ if(box){
+  var params=new URLSearchParams(location.search);
+  var cat=params.get("cat");
+  if(!cat&&location.hash){var h=location.hash.replace("#","");if(CATS[h])cat=h}
+  if(cat&&CATS[cat])box.setAttribute("data-category",cat);
+  if(location.pathname.indexOf("tools.html")>=0){
+   var t=document.getElementById("pageTitle");var cfg=CATS[box.getAttribute("data-category")]||CATS.document;
+   if(t) t.textContent=cfg.label;
+  }
+  buildWheel(box);
+  var dz=document.querySelector(".dropzone");
+  var input=document.querySelector(".drop-input");
+  var chip=document.querySelector(".file-chip");
+  var changeBtn=document.querySelector(".change-file");
+  function receive(f){if(f&&box._arkSetFile)box._arkSetFile(f)}
+  if(dz){
+   dz.addEventListener("dragover",function(e){e.preventDefault();dz.classList.add("drag")});
+   dz.addEventListener("dragleave",function(){dz.classList.remove("drag")});
+   dz.addEventListener("drop",function(e){e.preventDefault();dz.classList.remove("drag");if(e.dataTransfer.files[0])receive(e.dataTransfer.files[0])});
+  }
+  if(input)input.addEventListener("change",function(){if(input.files[0])receive(input.files[0])});
+  if(chip){
+   chip.addEventListener("dragstart",function(e){try{e.dataTransfer.setData("text/plain","arkfile");e.dataTransfer.effectAllowed="copyMove"}catch(err){}});
+  }
+  if(changeBtn)changeBtn.addEventListener("click",function(){
+   box._arkFile=null;
+   var stage=document.querySelector(".stage2");if(stage)stage.hidden=true;
+   if(dz)dz.hidden=false;
+   if(chip)chip.textContent="";
+   var dl=box.querySelector(".download");if(dl)dl.hidden=true;
+   var st=box.querySelector(".status");if(st){st.textContent="Drag the file onto a format.";st.className="status"}
+   var bar=box.querySelector(".progress i");if(bar)bar.style.width="0%";
+   if(input)input.value="";
+  });
+ }
  /* blog list */
- var list=$("#blogList");
+ var list=document.getElementById("blogList");
  if(list&&window.ARK_BLOG_POSTS){list.innerHTML=window.ARK_BLOG_POSTS.map(function(p){return '<article class="card"><h3><a href="/blog/post.html?slug='+p.slug+'">'+esc(p.title)+"</a></h3><p class='muted small'>"+esc(p.date)+"</p><p>"+esc(p.excerpt)+"</p></article>"}).join("")}
- var preview=$("#blogPreview");
+ var preview=document.getElementById("blogPreview");
  if(preview&&window.ARK_BLOG_POSTS){preview.innerHTML=window.ARK_BLOG_POSTS.map(function(p){return '<article class="card"><h3><a href="/blog/post.html?slug='+p.slug+'">'+esc(p.title)+"</a></h3><p>"+esc(p.excerpt)+'</p></article>'}).join("")}
- var postEl=$("#blogPost");
+ var postEl=document.getElementById("blogPost");
  if(postEl&&window.ARK_BLOG_POSTS){var slug=new URLSearchParams(location.search).get("slug");var post=window.ARK_BLOG_POSTS.filter(function(p){return p.slug===slug})[0]||window.ARK_BLOG_POSTS[0];document.title=post.title+" | arkConvert";postEl.innerHTML="<p class='muted small'>"+esc(post.date)+" • arkConvert Blog</p><h1>"+esc(post.title)+"</h1><p class='lead'>"+esc(post.excerpt)+"</p>"+post.body+"<p><a href='/blog/'>← All blog posts</a></p>"}
 });
 })();
