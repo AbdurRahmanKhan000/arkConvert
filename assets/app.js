@@ -113,6 +113,397 @@ function htmlDocFromText(text,title){
  return "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>"+esc(title||"Converted document")+"</title>\n</head>\n<body>\n"+body+"\n</body>\n</html>\n";
 }
 
+
+/* ---------- Structured document model (v7 fidelity) ----------
+   Blocks: {type:'h',level,runs} {type:'p',runs} {type:'list',ordered,items:[{runs,level}]}
+   {type:'table',rows:[[cell,...]]} {type:'code',text} {type:'hr'} {type:'break'}
+   {type:'slide',title,runs}. A cell is a string or {runs}. Runs: {text,bold,italic,code}.
+   Vector shapes/drawings/SmartArt/embedded fonts/scanned content cannot be
+   recreated by a browser converter and are NOT invented here; the blocks
+   below carry only the text/tables/lists actually read from the file. */
+function runsText(runs){return (runs||[]).map(function(r){return r.text||""}).join("")}
+function blockPlain(b){
+  if(!b) return "";
+  if(b.type==="table") return b.rows.map(function(r){return r.map(function(c){return typeof c==="string"?c:runsText(c.runs||[{text:String(c)}])}).join("\t")}).join("\n");
+  if(b.type==="list") return b.items.map(function(it){return runsText(it.runs)}).join("\n");
+  return runsText(b.runs)||b.text||b.title||"";
+}
+function blocksToText(blocks){
+  var out=[];
+  (blocks||[]).forEach(function(b){
+    if(b.type==="h") out.push(runsText(b.runs));
+    else if(b.type==="slide") out.push(runsText(b.runs));
+    else if(b.type==="p") out.push(runsText(b.runs));
+    else if(b.type==="code") out.push(b.text||"");
+    else if(b.type==="hr") out.push("---");
+    else if(b.type==="list") b.items.forEach(function(it,i){ var pre=b.ordered?((i+1)+". "):"- "; out.push(new Array((it.level||0)*2+1).join(" ")+pre+runsText(it.runs)); });
+    else if(b.type==="table") b.rows.forEach(function(r){ out.push(r.map(function(c){return typeof c==="string"?c:runsText(c.runs||[{text:String(c)}])}).join("\t")); });
+  });
+  return out.join("\n\n");
+}
+function mdInlineRuns(str){
+  var runs=[], re=/(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g, last=0, m;
+  while((m=re.exec(str))){
+    if(m.index>last) runs.push({text:str.slice(last,m.index)});
+    var tok=m[0];
+    if(tok.slice(0,2)==="**") runs.push({text:tok.slice(2,-2),bold:true});
+    else if(tok[0]==="*") runs.push({text:tok.slice(1,-1),italic:true});
+    else runs.push({text:tok.slice(1,-1),code:true});
+    last=m.index+tok.length;
+  }
+  if(last<str.length) runs.push({text:str.slice(last)});
+  return runs.length?runs:[{text:str}];
+}
+function mdInlineMd(runs){return (runs||[]).map(function(r){ var t=r.text||""; if(r.code) return "`"+t+"`"; if(r.bold) return "**"+t+"**"; if(r.italic) return "*"+t+"*"; return t; }).join("")}
+function mdInlineHtml(runs){return (runs||[]).map(function(r){ var t=esc(r.text||""); if(r.code) t="<code>"+t+"</code>"; if(r.bold) t="<strong>"+t+"</strong>"; if(r.italic) t="<em>"+t+"</em>"; return t; }).join("")}
+function htmlInlineRuns(el){
+  var runs=[];
+  function walk(n,bold,italic){
+    if(n.nodeType===3){ if(n.textContent) runs.push({text:n.textContent,bold:bold,italic:italic}); return; }
+    var tag=(n.tagName||"").toLowerCase();
+    var b=bold||tag==="b"||tag==="strong", it=italic||tag==="i"||tag==="em", cd=tag==="code";
+    for(var i=0;i<n.childNodes.length;i++){
+      if(cd && n.childNodes[i].nodeType===3){ runs.push({text:n.childNodes[i].textContent,code:true}); }
+      else walk(n.childNodes[i],b,it);
+    }
+  }
+  walk(el,false,false);
+  return runs.length?runs:[{text:el.textContent||""}];
+}
+function htmlToBlocks(html){
+  var div=document.createElement("div");
+  div.innerHTML=String(html||"").replace(/<script[\s\S]*?<\/script>/gi,"").replace(/<style[\s\S]*?<\/style>/gi,"");
+  var blocks=[];
+  function walkChildren(parent){
+    for(var i=0;i<parent.childNodes.length;i++){
+      var n=parent.childNodes[i];
+      if(n.nodeType===3){ if(n.textContent.trim()) blocks.push({type:"p",runs:[{text:n.textContent.trim()}]}); continue; }
+      var tag=(n.tagName||"").toLowerCase();
+      if(tag==="h1"||tag==="h2"||tag==="h3") blocks.push({type:"h",level:parseInt(tag[1],10),runs:htmlInlineRuns(n)});
+      else if(tag==="p"){ if(n.textContent.trim()) blocks.push({type:"p",runs:htmlInlineRuns(n)}); }
+      else if(tag==="ul"||tag==="ol"){
+        var items=[];
+        for(var j=0;j<n.childNodes.length;j++){ var li=n.childNodes[j]; if(li.tagName&&li.tagName.toLowerCase()==="li") items.push({runs:htmlInlineRuns(li),level:0}); }
+        if(items.length) blocks.push({type:"list",ordered:tag==="ol",items:items});
+      }
+      else if(tag==="table"){
+        var rows=[];
+        for(var r=0;r<n.rows.length;r++){ var cells=[]; for(var c=0;c<n.rows[r].cells.length;c++) cells.push({runs:htmlInlineRuns(n.rows[r].cells[c])}); rows.push(cells); }
+        if(rows.length) blocks.push({type:"table",rows:rows});
+      }
+      else if(tag==="pre") blocks.push({type:"code",text:n.textContent});
+      else if(tag==="hr") blocks.push({type:"hr"});
+      else if(tag==="div"||tag==="section"||tag==="article"||tag==="blockquote"||tag==="main") walkChildren(n);
+    }
+  }
+  walkChildren(div);
+  return blocks;
+}
+function mdToBlocks(text){
+  var lines=String(text||"").split(/\r?\n/), blocks=[], i=0, para=[];
+  function flushPara(){ if(para.length) blocks.push({type:"p",runs:mdInlineRuns(para.join(" "))}); para=[]; }
+  function flushList(items,ordered){ if(items.length) blocks.push({type:"list",ordered:ordered,items:items}); }
+  while(i<lines.length){
+    var line=lines[i];
+    if(line.trim().startsWith("```")){ flushPara(); var code=[]; i++; while(i<lines.length&&!lines[i].trim().startsWith("```")){ code.push(lines[i]); i++; } i++; blocks.push({type:"code",text:code.join("\n")}); continue; }
+    var hm=line.match(/^(#{1,3})\s+(.*)$/);
+    if(hm){ flushPara(); blocks.push({type:"h",level:hm[1].length,runs:mdInlineRuns(hm[2])}); i++; continue; }
+    if(/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)){ flushPara(); blocks.push({type:"hr"}); i++; continue; }
+    if(line.indexOf("|")>=0 && i+1<lines.length && /^[\s|:,-]+$/.test(lines[i+1]) && lines[i+1].indexOf("-")>=0){
+      flushPara(); var rows=[];
+      while(i<lines.length && lines[i].indexOf("|")>=0){
+        var cells=lines[i].trim().replace(/^\|/,"").replace(/\|$/,"").split("|").map(function(c){return {runs:mdInlineRuns(c.trim())}});
+        rows.push(cells); i++;
+        if(i<lines.length && /^[\s|:,-]+$/.test(lines[i])) i++;
+      }
+      if(rows.length) blocks.push({type:"table",rows:rows});
+      continue;
+    }
+    var lm=line.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
+    if(lm){
+      flushPara(); var items=[], ordered=/^\d/.test(lm[2]);
+      while(i<lines.length){
+        var m2=lines[i].match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
+        if(!m2) break;
+        items.push({runs:mdInlineRuns(m2[3]),level:Math.floor(m2[1].length/2)});
+        i++;
+      }
+      flushList(items,ordered); continue;
+    }
+    if(!line.trim()){ flushPara(); i++; continue; }
+    para.push(line.trim()); i++;
+  }
+  flushPara();
+  return blocks;
+}
+function txtToBlocks(text){
+  return String(text||"").split(/\r?\n\r?\n/).map(function(chunk){ return chunk.trim(); }).filter(function(c){ return c; }).map(function(c){ return {type:"p",runs:[{text:c.replace(/\s*\n\s*/g," ")}]}; });
+}
+function pdfToBlocks(data){
+  return loadScript("https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js").then(function(){
+    if(!window.pdfjsLib) throw new Error("PDF library did not load.");
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    return window.pdfjsLib.getDocument({data:data}).promise;
+  }).then(function(pdf){
+    var jobs=[];
+    for(var p=1;p<=pdf.numPages;p++) jobs.push(pdf.getPage(p).then(function(page){
+      return page.getTextContent().then(function(tc){
+        var items=tc.items.map(function(it){
+          var size=Math.abs((it.transform&&it.transform[3])||it.height||11);
+          return {x:(it.transform?it.transform[4]:0), y:(it.transform?it.transform[5]:0), str:it.str||"", size:size, bold:/(Bold|Black|Heavy)/i.test(it.fontName||"")};
+        }).filter(function(it){ return it.str; });
+        items.sort(function(a,b){ return (b.y-a.y)||(a.x-b.x); });
+        var sizes=items.map(function(it){ return it.size; }).sort(function(a,b){ return a-b; });
+        var median=sizes.length?sizes[Math.floor(sizes.length/2)]:11;
+        var heights=items.map(function(it){ return it.size; }).sort(function(a,b){ return a-b; });
+        var medH=heights.length?heights[Math.floor(heights.length/2)]:11;
+        var lines=[];
+        items.forEach(function(it){
+          var line=null;
+          for(var k=0;k<lines.length;k++){ if(Math.abs(lines[k].y-it.y)<=Math.max(3, it.size*0.6)){ line=lines[k]; break; } }
+          if(!line){ line={y:it.y,items:[]}; lines.push(line); }
+          line.items.push(it);
+        });
+        lines.sort(function(a,b){ return b.y-a.y; });
+        var blocks=[], cur=null, prevY=null;
+        lines.forEach(function(line){
+          line.items.sort(function(a,b){ return a.x-b.x; });
+          var parts=[], prevEnd=null, runs=[];
+          line.items.forEach(function(it){
+            if(prevEnd!==null && it.x-prevEnd>it.size*0.3) parts.push(" ");
+            parts.push(it.str); runs.push({text:it.str,bold:it.bold});
+            prevEnd=it.x+it.str.length*it.size*0.5;
+          });
+          var text=parts.join("").replace(/\s+/g," ").trim();
+          if(!text) return;
+          var lineSize=Math.max.apply(null, line.items.map(function(it){ return it.size; }));
+          var bold=line.items.some(function(it){ return it.bold; });
+          var level=lineSize>=median*1.5?1:(lineSize>=median*1.25?2:0);
+          if(level){
+            if(cur){ blocks.push(cur); cur=null; }
+            blocks.push({type:"h",level:level,runs:[{text:text,bold:true}]});
+          } else {
+            if(cur && prevY!==null && (prevY-line.y)>medH*1.8){ blocks.push(cur); cur=null; }
+            if(!cur) cur={type:"p",runs:[]};
+            if(cur.runs.length) cur.runs.push({text:" "});
+            cur.runs.push({text:text,bold:bold});
+          }
+          prevY=line.y;
+        });
+        if(cur) blocks.push(cur);
+        return blocks;
+      });
+    }));
+    return Promise.all(jobs).then(function(pages){
+      var out=[];
+      pages.forEach(function(blocks,idx){ if(idx>0 && blocks.length) out.push({type:"break"}); out=out.concat(blocks); });
+      return out;
+    });
+  });
+}
+function docxToBlocks(data){
+  return loadScript("https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js").then(function(){
+    if(!window.mammoth) throw new Error("Word library did not load.");
+    return window.mammoth.convertToHtml({arrayBuffer:data});
+  }).then(function(r){ return htmlToBlocks(r.value); });
+}
+function pptxToBlocks(data){
+  return loadScript("https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js").then(function(){ return JSZip.loadAsync(data); }).then(function(zip){
+    var names=Object.keys(zip.files).filter(function(n){ return /^ppt\/slides\/slide\d+\.xml$/.test(n); }).sort(function(a,b){
+      var na=parseInt(a.match(/slide(\d+)/)[1],10), nb=parseInt(b.match(/slide(\d+)/)[1],10); return na-nb;
+    });
+    var jobs=names.map(function(n){ return zip.file(n).async("string"); });
+    return Promise.all(jobs).then(function(slides){
+      var blocks=[];
+      slides.forEach(function(xml,si){
+        if(si>0) blocks.push({type:"break"});
+        var shapes=xml.match(/<p:sp>[\s\S]*?<\/p:sp>/g)||[];
+        shapes.forEach(function(shape){
+          var isTitle=/<p:ph[^>]*type="(title|ctrTitle)"/.test(shape);
+          var paras=shape.match(/<a:p>[\s\S]*?<\/a:p>/g)||[];
+          var shapeParas=paras.map(function(pXml){
+            var lvlM=pXml.match(/<a:pPr[^>]*lvl="(\d+)"/); var lvl=lvlM?parseInt(lvlM[1],10):0;
+            var runs=[];
+            (pXml.match(/<a:r>[\s\S]*?<\/a:r>/g)||[]).forEach(function(rXml){
+              var tM=rXml.match(/<a:t>([^<]*)<\/a:t>/); if(!tM) return;
+              var bold=/<a:rPr[^>]*\sb="(1|true)"/.test(rXml);
+              runs.push({text:tM[1],bold:bold});
+            });
+            return {runs:runs,level:lvl};
+          }).filter(function(pp){ return runsText(pp.runs).trim(); });
+          if(!shapeParas.length) return;
+          if(isTitle){ blocks.push({type:"slide",title:runsText(shapeParas[0].runs),runs:shapeParas[0].runs}); shapeParas.slice(1).forEach(function(pp){ blocks.push({type:"p",runs:pp.runs}); }); }
+          else if(shapeParas.length===1 && shapeParas[0].level===0){ blocks.push({type:"p",runs:shapeParas[0].runs}); }
+          else blocks.push({type:"list",ordered:false,items:shapeParas.map(function(pp){ return {runs:pp.runs,level:pp.level}; })});
+        });
+      });
+      return blocks;
+    });
+  });
+}
+function blocksToMd(blocks){
+  var out=[];
+  (blocks||[]).forEach(function(b){
+    if(b.type==="h") out.push(new Array(b.level+1).join("#")+" "+mdInlineMd(b.runs));
+    else if(b.type==="slide") out.push("# "+mdInlineMd(b.runs));
+    else if(b.type==="p") out.push(mdInlineMd(b.runs));
+    else if(b.type==="code") out.push("```\n"+(b.text||"")+"\n```");
+    else if(b.type==="hr") out.push("---");
+    else if(b.type==="list") b.items.forEach(function(it,i){ var pre=b.ordered?((i+1)+". "):"- "; out.push(new Array((it.level||0)*2+1).join(" ")+pre+mdInlineMd(it.runs)); });
+    else if(b.type==="table"){
+      var rows=b.rows.map(function(r){ return r.map(function(c){ return typeof c==="string"?c.replace(/\|/g,"\\|"):mdInlineMd(c.runs||[{text:String(c)}]).replace(/\|/g,"\\|"); }); });
+      if(rows.length){ out.push("| "+rows[0].join(" | ")+" |"); out.push("| "+rows[0].map(function(){ return "---"; }).join(" | ")+" |"); rows.slice(1).forEach(function(r){ out.push("| "+r.join(" | ")+" |"); }); }
+    }
+  });
+  return out.join("\n\n");
+}
+function blocksToHtml(blocks,title){
+  var body=(blocks||[]).map(function(b){
+    if(b.type==="h") return "<h"+b.level+">"+mdInlineHtml(b.runs)+"</h"+b.level+">";
+    if(b.type==="slide") return "<h1>"+mdInlineHtml(b.runs)+"</h1>";
+    if(b.type==="p") return "<p>"+mdInlineHtml(b.runs)+"</p>";
+    if(b.type==="code") return "<pre>"+esc(b.text||"")+"</pre>";
+    if(b.type==="hr") return "<hr>";
+    if(b.type==="list"){ var tag=b.ordered?"ol":"ul"; return "<"+tag+">"+b.items.map(function(it){ return "<li>"+mdInlineHtml(it.runs)+"</li>"; }).join("")+"</"+tag+">"; }
+    if(b.type==="table"){
+      return "<table>"+b.rows.map(function(r,ri){ var cell=ri===0?"th":"td"; return "<tr>"+r.map(function(c){ return "<"+cell+">"+(typeof c==="string"?esc(c):mdInlineHtml(c.runs||[{text:String(c)}]))+"</"+cell+">"; }).join("")+"</tr>"; }).join("")+"</table>";
+    }
+    return "";
+  }).join("\n");
+  return "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>"+esc(title||"Converted document")+"</title>\n</head>\n<body>\n"+body+"\n</body>\n</html>\n";
+}
+function docxRunsXml(runs){
+  return (runs||[]).map(function(r){
+    var pr=(r.bold?"<w:b/>":"")+(r.italic?"<w:i/>":"");
+    return "<w:r>"+(pr?"<w:rPr>"+pr+"</w:rPr>":"")+"<w:t xml:space=\"preserve\">"+esc(r.text||"")+"</w:t></w:r>";
+  }).join("");
+}
+function docxParaXml(runs,style,numId,ilvl){
+  var pr="";
+  if(style) pr+="<w:pStyle w:val=\""+style+"\"/>";
+  if(numId) pr+="<w:numPr><w:ilvl w:val=\""+(ilvl||0)+"\"/><w:numId w:val=\""+numId+"\"/></w:numPr>";
+  return "<w:p>"+(pr?"<w:pPr>"+pr+"</w:pPr>":"")+docxRunsXml(runs)+"</w:p>";
+}
+function blocksToDocxXml(blocks){
+  var parts=[];
+  (blocks||[]).forEach(function(b){
+    if(b.type==="h") parts.push(docxParaXml(b.runs,"Heading"+b.level));
+    else if(b.type==="slide") parts.push(docxParaXml(b.runs,"Heading1"));
+    else if(b.type==="p") parts.push(docxParaXml(b.runs));
+    else if(b.type==="code") parts.push(docxParaXml([{text:b.text||""}]));
+    else if(b.type==="hr") parts.push("<w:p><w:pPr><w:pBdr><w:bottom w:val=\"single\" w:sz=\"6\" w:space=\"1\" w:color=\"999999\"/></w:pBdr></w:pPr></w:p>");
+    else if(b.type==="list") b.items.forEach(function(it){ parts.push(docxParaXml(it.runs,null,b.ordered?2:1,it.level||0)); });
+    else if(b.type==="table"){
+      var ncols=Math.max.apply(null,b.rows.map(function(r){ return r.length; }));
+      var grid=""; for(var g=0;g<ncols;g++) grid+="<w:gridCol w:w=\"1500\"/>";
+      var rowsXml=b.rows.map(function(r,ri){
+        var cells="";
+        for(var c=0;c<ncols;c++){
+          var cell=r[c]; var runs=cell? (typeof cell==="string"?[{text:cell}]:cell.runs||[{text:String(cell)}]) : [{text:""}];
+          if(ri===0) runs=runs.map(function(rr){ return {text:rr.text,bold:true,italic:rr.italic}; });
+          cells+="<w:tc><w:tcPr><w:tcW w:w=\"0\" w:type=\"auto\"/></w:tcPr>"+docxParaXml(runs)+"</w:tc>";
+        }
+        return "<w:tr>"+cells+"</w:tr>";
+      }).join("");
+      parts.push("<w:tbl><w:tblPr><w:tblW w:w=\"0\" w:type=\"auto\"/><w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:color=\"999999\"/><w:left w:val=\"single\" w:sz=\"4\" w:color=\"999999\"/><w:bottom w:val=\"single\" w:sz=\"4\" w:color=\"999999\"/><w:right w:val=\"single\" w:sz=\"4\" w:color=\"999999\"/><w:insideH w:val=\"single\" w:sz=\"4\" w:color=\"999999\"/><w:insideV w:val=\"single\" w:sz=\"4\" w:color=\"999999\"/></w:tblBorders></w:tblPr><w:tblGrid>"+grid+"</w:tblGrid>"+rowsXml+"</w:tbl>");
+    }
+  });
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'+parts.join("")+"</w:body></w:document>";
+}
+function makeDocxFromBlocks(blocks){
+  return loadScript("https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js").then(function(){
+    var zip=new JSZip();
+    zip.file("[Content_Types].xml",'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>');
+    zip.folder("_rels").file(".rels",'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
+    zip.folder("word").file("_rels").file("document.xml.rels",'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/></Relationships>');
+    zip.folder("word").file("numbering.xml",'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="0"><w:multiLevelType w:val="hybridMultilevel"/><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="\\u2022"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl><w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="\\u25e6"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="1440" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="1"><w:multiLevelType w:val="hybridMultilevel"/><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num></w:numbering>');
+    zip.folder("word").file("document.xml",blocksToDocxXml(blocks));
+    return zip.generateAsync({type:"blob",mimeType:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"});
+  });
+}
+function makePdfFromBlocks(blocks){
+  return loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js").then(function(){
+    var JSPDF=window.jspdf&&window.jspdf.jsPDF; if(!JSPDF) throw new Error("PDF library did not load. Check your connection and try again.");
+    var doc=new JSPDF(); var y=15, W=180, first=true;
+    function ensure(h){ if(y+h>280){ doc.addPage(); y=15; } }
+    function writeLines(lines,size,bold,font,x){
+      doc.setFont(font||"helvetica",bold?"bold":"normal"); doc.setFontSize(size);
+      lines.forEach(function(ln){ ensure(8); doc.text(ln,x||15,y); y+=size*0.55+1.5; });
+    }
+    function writeText(text,size,bold,x){
+      var lines=doc.splitTextToSize(String(text||""),W-(x?x-15:0));
+      writeLines(lines,size,bold,"helvetica",x);
+    }
+    (blocks||[]).forEach(function(b){
+      if(b.type==="break"){ if(!first){ doc.addPage(); y=15; } return; }
+      first=false;
+      if(b.type==="h"){ y+=2; writeText(runsText(b.runs),b.level===1?20:(b.level===2?16:13),true); y+=2; }
+      else if(b.type==="slide"){ if(y>20){ doc.addPage(); y=15; } writeText(runsText(b.runs),20,true); y+=2; }
+      else if(b.type==="p"){ writeText(runsText(b.runs),11,false); y+=2; }
+      else if(b.type==="code"){ doc.setFont("courier","normal"); doc.setFontSize(10); doc.splitTextToSize(b.text||"",W).forEach(function(ln){ ensure(7); doc.text(ln,15,y); y+=6; }); y+=2; }
+      else if(b.type==="hr"){ ensure(8); doc.setDrawColor(150); doc.line(15,y,195,y); y+=6; }
+      else if(b.type==="list"){
+        b.items.forEach(function(it,i){
+          var pre=b.ordered?((i+1)+". "):"\\u2022 ";
+          var indent=15+(it.level||0)*8;
+          var lines=doc.splitTextToSize(pre+runsText(it.runs),W-(indent-15));
+          writeLines(lines,11,false,"helvetica",indent); y+=1;
+        });
+        y+=2;
+      }
+      else if(b.type==="table"){
+        var ncols=Math.max.apply(null,b.rows.map(function(r){ return r.length; }));
+        var cw=W/ncols;
+        b.rows.forEach(function(r,ri){
+          var cells=r.map(function(c){ return typeof c==="string"?c:runsText(c.runs||[{text:String(c)}]); });
+          var wrapped=cells.map(function(c){ return doc.splitTextToSize(c,cw-4); });
+          for(var cc=ncols;cc<cells.length;cc++) wrapped.push([""]);
+          var maxL=Math.max.apply(null,wrapped.map(function(w){ return w.length; }));
+          ensure(maxL*6+4);
+          doc.setFont("helvetica",ri===0?"bold":"normal"); doc.setFontSize(10);
+          wrapped.forEach(function(w,ci){ w.forEach(function(ln,li){ doc.text(ln,15+ci*cw+2,y+li*6); }); });
+          y+=maxL*6+3;
+          if(ri===0){ doc.setDrawColor(100); doc.line(15,y-1,195,y-1); }
+        });
+        y+=3;
+      }
+    });
+    return doc.output("blob");
+  });
+}
+function pptxSlidesFromBlocks(blocks){
+  var slides=[{title:null,body:[]}];
+  function cur(){ return slides[slides.length-1]; }
+  (blocks||[]).forEach(function(b){
+    if(b.type==="slide"){ slides.push({title:runsText(b.runs),body:[]}); }
+    else if(b.type==="break"){ slides.push({title:null,body:[]}); }
+    else if(b.type==="h"&&b.level===1){ if(cur().title||cur().body.length) slides.push({title:runsText(b.runs),body:[]}); else cur().title=runsText(b.runs); }
+    else if(b.type==="h"){ cur().body.push({text:runsText(b.runs),bold:true,bullet:false}); }
+    else if(b.type==="p"){ cur().body.push({text:runsText(b.runs),bold:false,bullet:false}); }
+    else if(b.type==="code"){ cur().body.push({text:b.text||"",bold:false,bullet:false,mono:true}); }
+    else if(b.type==="list"){ b.items.forEach(function(it){ cur().body.push({text:runsText(it.runs),bold:false,bullet:true,level:it.level||0}); }); }
+    else if(b.type==="table"){ b.rows.forEach(function(r){ cur().body.push({text:r.map(function(c){ return typeof c==="string"?c:runsText(c.runs||[{text:String(c)}]); }).join("  |  "),bold:false,bullet:false}); }); }
+  });
+  return slides.filter(function(s){ return s.title||s.body.length; });
+}
+function makePptxFromBlocks(blocks){
+  return loadScript("https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js").then(function(){
+    if(!window.PptxGenJS) throw new Error("PowerPoint library did not load. Check your connection and try again.");
+    var pptx=new window.PptxGenJS();
+    pptxSlidesFromBlocks(blocks).slice(0,60).forEach(function(slide,i){
+      var s=pptx.addSlide();
+      s.addText(slide.title||("Slide "+(i+1)),{x:0.5,y:0.4,w:9,h:0.8,fontSize:24,bold:true,color:"0B223D"});
+      if(slide.body.length){
+        var arr=slide.body.map(function(it){
+          return {text:it.text,options:{fontSize:16,color:"333333",bold:!!it.bold,bullet:!!it.bullet,indent:it.level?it.level*12:0,fontFace:it.mono?"Consolas":undefined}};
+        });
+        s.addText(arr,{x:0.5,y:1.4,w:9,h:4.5,valign:"top"});
+      }
+    });
+    return pptx.write({outputType:"blob"});
+  });
+}
+
 /* ---------- Document converters ---------- */
 function pdfToText(data){
  return loadScript("https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js").then(function(){
@@ -153,7 +544,15 @@ function pptxToText(data){
 
 /* ---------- Image converters ---------- */
 function loadImageBlob(blob){
- return new Promise(function(res,rej){var url=URL.createObjectURL(blob);var img=new Image();img.onload=function(){URL.revokeObjectURL(url);res(img)};img.onerror=function(){URL.revokeObjectURL(url);rej(new Error("This image could not be decoded in your browser."))};img.src=url});
+  /* v7: createImageBitmap with imageOrientation 'from-image' so EXIF-rotated
+     photos come out upright; falls back to <img> where bitmaps are unsupported
+     (e.g. some SVG). The result has width/height and draws with drawImage at
+     its original size -- never stretched. */
+  function imgFallback(){
+    return new Promise(function(res,rej){var url=URL.createObjectURL(blob);var img=new Image();img.onload=function(){URL.revokeObjectURL(url);res(img)};img.onerror=function(){URL.revokeObjectURL(url);rej(new Error("This image could not be decoded in your browser."))};img.src=url});
+  }
+  if(window.createImageBitmap) return window.createImageBitmap(blob,{imageOrientation:"from-image"}).catch(imgFallback);
+  return imgFallback();
 }
 function imageConvert(file,out){
  var inp=extOf(file.name);
@@ -175,7 +574,7 @@ function imageConvert(file,out){
   })});
  }
  return work.then(function(blob){
-  if(out==="pdf"){return loadImageBlob(blob).then(function(img){return loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js").then(function(){var JSPDF=window.jspdf.jsPDF;var doc=new JSPDF({unit:"px",format:[img.width,img.height]});var c=document.createElement("canvas");c.width=img.width;c.height=img.height;c.getContext("2d").drawImage(img,0,0);return new Promise(function(res){c.toBlob(function(b){var r=new FileReader();r.onload=function(){doc.addImage(r.result,"JPEG",0,0,img.width,img.height);res(doc.output("blob"))};r.readAsDataURL(b)},"image/jpeg",0.92)})})})}
+  if(out==="pdf"){return loadImageBlob(blob).then(function(img){return loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js").then(function(){var JSPDF=window.jspdf.jsPDF;var landscape=img.width>=img.height;var doc=new JSPDF({orientation:landscape?"landscape":"portrait",unit:"mm",format:"a4"});var pageW=doc.internal.pageSize.getWidth(),pageH=doc.internal.pageSize.getHeight();var margin=10;var wMm=img.width*25.4/96,hMm=img.height*25.4/96;var scale=Math.min((pageW-2*margin)/wMm,(pageH-2*margin)/hMm);var dw=wMm*scale,dh=hMm*scale;var x=(pageW-dw)/2,y=(pageH-dh)/2;var c=document.createElement("canvas");c.width=img.width;c.height=img.height;c.getContext("2d").drawImage(img,0,0);return new Promise(function(res,rej){c.toBlob(function(b){if(!b){rej(new Error("Could not render this image as a PDF."));return}var r=new FileReader();r.onload=function(){doc.addImage(r.result,"PNG",x,y,dw,dh);res(doc.output("blob"))};r.readAsDataURL(b)},"image/png")})})})}
   return loadImageBlob(blob).then(function(img){
    var c=document.createElement("canvas");c.width=img.width;c.height=img.height;var ctx=c.getContext("2d");
    if(out==="jpg"){ctx.fillStyle="#ffffff";ctx.fillRect(0,0,c.width,c.height)}
@@ -192,7 +591,9 @@ function csvParse(text){
  var rows=[],row=[],cur="",q=false;for(var i=0;i<text.length;i++){var ch=text[i];if(q){if(ch==='"'){if(text[i+1]==='"'){cur+='"';i++}else q=false}else cur+=ch}else if(ch==='"')q=true;else if(ch===","){row.push(cur);cur=""}else if(ch==="\n"){row.push(cur);rows.push(row);row=[];cur=""}else if(ch!=="\r")cur+=ch}
  if(cur!==""||row.length){row.push(cur);rows.push(row)}return rows;
 }
-function csvEscape(v){v=String(v==null?"":v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v}
+function csvEscape(v){v=String(v==null?"":v);return /[",\n\r]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v}
+function padRows(rows){ var n=Math.max.apply(null,rows.map(function(r){return r.length})); return rows.map(function(r){ var out=r.slice(); while(out.length<n) out.push(""); return out; }); }
+function rowsToCsv(rows){ return padRows(rows).map(function(r){ return r.map(csvEscape).join(","); }).join("\n"); }
 function dataConvert(file,out,buf,text){
  var inp=extOf(file.name);
  if(inp==="txt"&&out==="csv"){
@@ -205,18 +606,18 @@ function dataConvert(file,out,buf,text){
  }
  if(inp==="csv"&&out==="xlsx"){return ensureXlsx().then(function(){var wb=XLSX.read(text,{type:"string"});return new Blob([XLSX.write(wb,{bookType:"xlsx",type:"array"})],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"})})}
  if(inp==="csv"&&out==="txt"){return Promise.resolve(new Blob([text],{type:"text/plain"}))}
- if((inp==="xlsx"||inp==="xls")&&out==="csv"){return ensureXlsx().then(function(){var wb=XLSX.read(buf,{type:"array"});var ws=wb.Sheets[wb.SheetNames[0]];return new Blob([XLSX.utils.sheet_to_csv(ws)],{type:"text/csv"})})}
- if((inp==="xlsx"||inp==="xls")&&out==="txt"){return ensureXlsx().then(function(){var wb=XLSX.read(buf,{type:"array"});var ws=wb.Sheets[wb.SheetNames[0]];var rows=XLSX.utils.sheet_to_json(ws,{header:1});return new Blob([rows.map(function(r){return r.join("\t")}).join("\n")],{type:"text/plain"})})}
+ if((inp==="xlsx"||inp==="xls")&&out==="csv"){return ensureXlsx().then(function(){var wb=XLSX.read(buf,{type:"array",cellDates:true});var ws=wb.Sheets[wb.SheetNames[0]];var rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:"",raw:true});return new Blob([rowsToCsv(rows)],{type:"text/csv"})})}
+ if((inp==="xlsx"||inp==="xls")&&out==="txt"){return ensureXlsx().then(function(){var wb=XLSX.read(buf,{type:"array",cellDates:true});var ws=wb.Sheets[wb.SheetNames[0]];var rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:"",raw:true});return new Blob([padRows(rows).map(function(r){return r.join("\t")}).join("\n")],{type:"text/plain"})})}
  if(inp==="txt"&&out==="json"){ var jl=String(text).split(/\r?\n/).filter(function(l){return l.trim()}); return Promise.resolve(new Blob([JSON.stringify(jl,null,2)],{type:"application/json"})); }
  if(inp==="txt"&&out==="xml"){ var xl=String(text).split(/\r?\n/).filter(function(l){return l.trim()}); return Promise.resolve(new Blob([rowsToXml(xl.map(function(l){return {value:l}}),["value"])],{type:"application/xml"})); }
  if(inp==="csv"&&out==="json"){ var crow=csvParse(text); if(!crow.length)throw new Error("This CSV file is empty."); var hdr=crow[0]; var objs=crow.slice(1).filter(function(r){return r.join("").trim()}).map(function(r){ var o={}; hdr.forEach(function(h,i){ o[h||("col"+(i+1))]=r[i]==null?"":r[i]; }); return o; }); return Promise.resolve(new Blob([JSON.stringify(objs,null,2)],{type:"application/json"})); }
  if(inp==="csv"&&out==="xml"){ var crow2=csvParse(text); if(!crow2.length)throw new Error("This CSV file is empty."); return Promise.resolve(new Blob([rowsToXml(crow2.slice(1),crow2[0])],{type:"application/xml"})); }
- if((inp==="xlsx"||inp==="xls")&&out==="json"){ return ensureXlsx().then(function(){ var wb=XLSX.read(buf,{type:"array"}); var ws=wb.Sheets[wb.SheetNames[0]]; var objs=XLSX.utils.sheet_to_json(ws,{defval:""}); return new Blob([JSON.stringify(objs,null,2)],{type:"application/json"}); }); }
- if((inp==="xlsx"||inp==="xls")&&out==="xml"){ return ensureXlsx().then(function(){ var wb=XLSX.read(buf,{type:"array"}); var ws=wb.Sheets[wb.SheetNames[0]]; var aoa=XLSX.utils.sheet_to_json(ws,{header:1,defval:""}); if(!aoa.length)throw new Error("This spreadsheet is empty."); return new Blob([rowsToXml(aoa.slice(1),aoa[0])],{type:"application/xml"}); }); }
+ if((inp==="xlsx"||inp==="xls")&&out==="json"){ return ensureXlsx().then(function(){ var wb=XLSX.read(buf,{type:"array",cellDates:true}); var ws=wb.Sheets[wb.SheetNames[0]]; var objs=XLSX.utils.sheet_to_json(ws,{defval:"",raw:true}); return new Blob([JSON.stringify(objs,null,2)],{type:"application/json"}); }); }
+ if((inp==="xlsx"||inp==="xls")&&out==="xml"){ return ensureXlsx().then(function(){ var wb=XLSX.read(buf,{type:"array",cellDates:true}); var ws=wb.Sheets[wb.SheetNames[0]]; var aoa=XLSX.utils.sheet_to_json(ws,{header:1,defval:"",raw:true}); if(!aoa.length)throw new Error("This spreadsheet is empty."); return new Blob([rowsToXml(padRows(aoa).slice(1),padRows(aoa)[0])],{type:"application/xml"}); }); }
  if(inp==="json"&&out==="csv"){ var jdata=JSON.parse(text); var jrows=jsonToRows(jdata); if(!jrows.length)throw new Error("This JSON file has no rows."); var jhdr=[]; jrows.forEach(function(r){ Object.keys(r).forEach(function(k){ if(jhdr.indexOf(k)<0)jhdr.push(k); }); }); var jcsv=[jhdr.map(csvEscape).join(",")].concat(jrows.map(function(r){ return jhdr.map(function(h){ return csvEscape(r[h]); }).join(","); })).join("\n"); return Promise.resolve(new Blob([jcsv],{type:"text/csv"})); }
  if(inp==="json"&&out==="txt"){ var jdata2=JSON.parse(text); var jrows2=jsonToRows(jdata2); var jhdr2=[]; jrows2.forEach(function(r){ Object.keys(r).forEach(function(k){ if(jhdr2.indexOf(k)<0)jhdr2.push(k); }); }); var jtxt=jrows2.length&&jhdr2.length?([jhdr2.join("\t")].concat(jrows2.map(function(r){ return jhdr2.map(function(h){ return r[h]==null?"":r[h]; }).join("\t"); })).join("\n")):JSON.stringify(jdata2,null,2); return Promise.resolve(new Blob([jtxt],{type:"text/plain"})); }
- if(inp==="json"&&out==="xlsx"){ return ensureXlsx().then(function(){ var jdata3=JSON.parse(text); var jrows3=jsonToRows(jdata3); var aoa3=jrows3.map(function(r){ return Array.isArray(r)?r:Object.keys(r).map(function(k){ return r[k]; }); }); if(jrows3.length&&!Array.isArray(jrows3[0])) aoa3=[Object.keys(jrows3[0])].concat(aoa3); var ws=XLSX.utils.aoa_to_sheet(aoa3); var wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Sheet1"); return new Blob([XLSX.write(wb,{bookType:"xlsx",type:"array"})],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}); }); }
- if(inp==="json"&&out==="xml"){ var jdata4=JSON.parse(text); var jrows4=jsonToRows(jdata4); return Promise.resolve(new Blob([rowsToXml(jrows4)],{type:"application/xml"})); }
+ if(inp==="json"&&out==="xlsx"){ return ensureXlsx().then(function(){ var jdata3=JSON.parse(text); var jrows3=jsonToRows(jdata3); var hdr3=[]; jrows3.forEach(function(r){ if(!Array.isArray(r)) Object.keys(r).forEach(function(k){ if(hdr3.indexOf(k)<0) hdr3.push(k); }); }); var aoa3=jrows3.map(function(r){ return Array.isArray(r)?r:hdr3.map(function(h){ return r[h]==null?"":r[h]; }); }); if(jrows3.length&&!Array.isArray(jrows3[0])) aoa3=[hdr3].concat(aoa3); var ws=XLSX.utils.aoa_to_sheet(aoa3); var wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Sheet1"); return new Blob([XLSX.write(wb,{bookType:"xlsx",type:"array"})],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}); }); }
+if(inp==="json"&&out==="xml"){ var jdata4=JSON.parse(text); var jrows4=jsonToRows(jdata4); return Promise.resolve(new Blob([rowsToXml(jrows4)],{type:"application/xml"})); }
  if(inp==="xml"&&out==="csv"){ var xr=xmlToRows(text); var xcsv=[xr.headers.map(csvEscape).join(",")].concat(xr.rows.map(function(r){ return xr.headers.map(function(h){ return csvEscape(r[h]); }).join(","); })).join("\n"); return Promise.resolve(new Blob([xcsv],{type:"text/csv"})); }
  if(inp==="xml"&&out==="txt"){ var xr2=xmlToRows(text); var xtxt=[xr2.headers.join("\t")].concat(xr2.rows.map(function(r){ return xr2.headers.map(function(h){ return r[h]==null?"":r[h]; }).join("\t"); })).join("\n"); return Promise.resolve(new Blob([xtxt],{type:"text/plain"})); }
  if(inp==="xml"&&out==="json"){ var xr3=xmlToRows(text); return Promise.resolve(new Blob([JSON.stringify(xr3.rows,null,2)],{type:"application/json"})); }
@@ -322,23 +723,30 @@ function convertFile(file,out,progress){
     return loadScript("https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js").then(function(){var zip=new JSZip();blobs.forEach(function(b,i){zip.file(base+"-page-"+(i+1)+"."+out,b)});return zip.generateAsync({type:"blob"}).then(function(z){return {blob:z,name:base+"-pages.zip"}})});
    });
   }
-  var textP;
-  if(inp==="pdf")textP=file.arrayBuffer().then(function(b){return pdfToText(b)});
-  else if(inp==="docx")textP=file.arrayBuffer().then(function(b){return docxConvert(b,"txt")});
-  else if(inp==="pptx")textP=file.arrayBuffer().then(function(b){return pptxToText(b)});
-  else if(inp==="html"||inp==="htm")textP=file.text().then(function(t){return stripHtmlText(t)});
-  else textP=file.text();
-  textP=textP.then(function(tt){ if(!String(tt||"").trim()){ if(inp==="pdf") throw new Error("No extractable text found — this looks like a scanned PDF. Try a text-based PDF, or convert the PDF to an image instead."); throw new Error("No text could be extracted from this file. It may be empty or in an unsupported format."); } return tt; });
-  if(out==="html")return textP.then(function(t){return {blob:new Blob([htmlDocFromText(t,base)],{type:"text/html"}),name:base+".html"}});
-  if(out==="txt")return textP.then(function(t){return {blob:new Blob([t],{type:"text/plain"}),name:base+".txt"}});
-  if(out==="md"){
-   if(inp==="docx")return file.arrayBuffer().then(function(b){return docxConvert(b,"md")}).then(function(t){if(!String(t||"").trim())throw new Error("No text could be extracted from this Word file.");return {blob:new Blob([t],{type:"text/markdown"}),name:base+".md"}});
-   if(inp==="pptx")return textP.then(function(t){return {blob:new Blob([t.split("\n\n").map(function(s){return "## "+s}).join("\n\n")],{type:"text/markdown"}),name:base+".md"}});
-   return textP.then(function(t){return {blob:new Blob([mdFromText(t)],{type:"text/markdown"}),name:base+".md"}});
-  }
-  if(out==="docx")return textP.then(function(t){return makeDocxBlob(t).then(function(b){return {blob:b,name:base+".docx"}})});
-  if(out==="pdf")return textP.then(function(t){return makePdfBlob(t).then(function(b){return {blob:b,name:base+".pdf"}})});
-  if(out==="pptx")return textP.then(function(t){return makePptxBlob(t).then(function(b){return {blob:b,name:base+".pptx"}})});
+   /* v7: structured path first (headings/lists/tables/order preserved);
+      if a structured parser fails, fall back to the old flat-text path so a
+      parser bug never turns a previously working conversion into an error. */
+   var docP;
+   if(inp==="pdf")docP=file.arrayBuffer().then(function(b){return pdfToBlocks(b)});
+   else if(inp==="docx")docP=file.arrayBuffer().then(function(b){return docxToBlocks(b)});
+   else if(inp==="pptx")docP=file.arrayBuffer().then(function(b){return pptxToBlocks(b)});
+   else if(inp==="html"||inp==="htm")docP=file.text().then(function(t){return htmlToBlocks(t)});
+   else if(inp==="md")docP=file.text().then(function(t){return mdToBlocks(t)});
+   else docP=file.text().then(function(t){return txtToBlocks(t)});
+   var flatP;
+   if(inp==="pdf")flatP=file.arrayBuffer().then(function(b){return pdfToText(b)});
+   else if(inp==="docx")flatP=file.arrayBuffer().then(function(b){return docxConvert(b,"txt")});
+   else if(inp==="pptx")flatP=file.arrayBuffer().then(function(b){return pptxToText(b)});
+   else if(inp==="html"||inp==="htm")flatP=file.text().then(function(t){return stripHtmlText(t)});
+   else flatP=file.text();
+   docP=docP.catch(function(){ return flatP.then(function(t){return txtToBlocks(t)}); });
+   docP=docP.then(function(blocks){ if(!blocksToText(blocks).trim()){ if(inp==="pdf") throw new Error("No extractable text found \u2014 this looks like a scanned PDF. Try a text-based PDF, or convert the PDF to an image instead."); throw new Error("No text could be extracted from this file. It may be empty or in an unsupported format."); } return blocks; });
+   if(out==="html")return docP.then(function(blocks){return {blob:new Blob([blocksToHtml(blocks,base)],{type:"text/html"}),name:base+".html"}});
+   if(out==="txt")return docP.then(function(blocks){return {blob:new Blob([blocksToText(blocks)],{type:"text/plain"}),name:base+".txt"}});
+   if(out==="md")return docP.then(function(blocks){return {blob:new Blob([blocksToMd(blocks)],{type:"text/markdown"}),name:base+".md"}});
+   if(out==="docx")return docP.then(function(blocks){return makeDocxFromBlocks(blocks).then(function(b){return {blob:b,name:base+".docx"}})});
+   if(out==="pdf")return docP.then(function(blocks){return makePdfFromBlocks(blocks).then(function(b){return {blob:b,name:base+".pdf"}})});
+   if(out==="pptx")return docP.then(function(blocks){return makePptxFromBlocks(blocks).then(function(b){return {blob:b,name:base+".pptx"}})});
  }
  var imgIn=["png","jpg","jpeg","webp","gif","bmp","avif","heic","heif","tif","tiff","svg"];
  if(imgIn.indexOf(inp)>=0){
@@ -372,7 +780,7 @@ function buildWedgeSVG(container, segments, opts){
  var rotor=document.createElementNS(NS,"g"), labels=document.createElementNS(NS,"g");
  svg.appendChild(rotor); svg.appendChild(labels); container.appendChild(svg);
  var cx=200, cy=200, rM=143, n=segments.length, texts=[];
- var state={angle:0,last:null,hover:false,stopped:false,reduced:!!(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches)};
+ var state={angle:0,last:null,hover:false,reduced:!!(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches)};
  segments.forEach(function(seg,i){
   var a0=(-Math.PI/2)+i*(2*Math.PI/n), a1=a0+(2*Math.PI/n);
   var path=document.createElementNS(NS,"path");
@@ -402,8 +810,8 @@ function buildWedgeSVG(container, segments, opts){
  function frame(ts){
   if(state.last==null) state.last=ts;
   var dt=(ts-state.last)/1000; state.last=ts;
-  var paused=state.hover||__arkDragging||__arkConverting||state.reduced||state.stopped;
-  if(!paused) state.angle+=dt*(360/105); /* ~105 seconds per revolution: slow, professional */
+  var paused=state.hover||__arkDragging||__arkConverting||state.reduced;
+  if(!paused) state.angle+=dt*(360/60); /* v7: ~60 seconds per revolution: slow and professional, but clearly visibly spinning. Pauses ONLY on hover, during a real drag, and while converting. */
   rotor.setAttribute("transform","rotate("+state.angle.toFixed(2)+" 200 200)");
   texts.forEach(function(item){
    var a=item.mid+state.angle*Math.PI/180;
@@ -414,9 +822,8 @@ function buildWedgeSVG(container, segments, opts){
   requestAnimationFrame(frame);
  }
  requestAnimationFrame(frame);
- /* v5: stop() freezes the angle permanently; the frame keeps running so
-    wedge labels are re-rendered upright at that frozen angle every frame. */
- return {svg:svg,stop:function(){ state.stopped=true; }};
+ /* v7: no permanent stop. The frame keeps running and re-renders labels upright at the current angle every frame; drag accuracy comes from the drag pause, not from freezing the wheel. */
+ return {svg:svg};
 }
 
 /* Stage 1: drop zone only. Stage 2 (after a file arrives): conversion wheel
@@ -429,7 +836,6 @@ function buildWheel(box){
  var wheel=box.querySelector(".wheel");if(!wheel)return;
  wheel.innerHTML="";
  var state={file:null,lastFmt:null};
- var wheelApi=null; /* v5: set once the conversion wheel is built; setFile stops it */
  function setStatus(msg,kind){var el=box.querySelector(".status");if(el){el.textContent=msg;el.className="status "+(kind||"")}}
  function setProgress(p){var bar=box.querySelector(".progress i");if(bar)bar.style.width=p+"%"}
  function hideDownload(){var dls=box.querySelectorAll(".download");dls.forEach(function(dl){dl.hidden=true;dl.style.display="none";dl.removeAttribute("href")})}
@@ -444,10 +850,7 @@ function buildWheel(box){
  centre.addEventListener("drop",function(e){ e.preventDefault(); if(e.dataTransfer.files&&e.dataTransfer.files[0]){ setFile(e.dataTransfer.files[0]); } else if(state.file){ setStatus("Release the file on a format segment, not the centre.","err"); } });
  function setFile(f){
   state.file=f;box._arkFile=f;
-  /* v5: once a file arrives the wheel stops rotating so a drag lands
-     exactly on the aimed segment; it stays stopped on file change/replace
-     (Change file never resumes it, and the next setFile stops it again). */
-  if(wheelApi&&wheelApi.stop) wheelApi.stop();
+  /* v7: the wheel keeps spinning after a file arrives. Drag accuracy is handled by the drag pause (__arkDragging is true while a chip/native file is being dragged), so a permanent stop is not needed and must not make the wheel look dead. */
   var chip=document.querySelector(".file-chip");if(chip)chip.textContent=f.name+" • "+fmtSize(f.size);
   var stage=document.querySelector(".stage2");if(stage)stage.hidden=false;
   var dz=document.querySelector(".dropzone");if(dz)dz.hidden=true;
@@ -481,7 +884,7 @@ function buildWheel(box){
   });
  }
  var segs=cfg.outputs.map(function(fmt){ return {label:fmt,value:fmt,active:(preset===fmt)}; });
- wheelApi=buildWedgeSVG(wheel, segs, {
+ buildWedgeSVG(wheel, segs, {
   onSelect:function(fmt){ doConvert(fmt); },
   onDrop:function(fmt,e){ if(e.dataTransfer.files&&e.dataTransfer.files[0]){ setFile(e.dataTransfer.files[0]); doConvert(fmt); } else if(state.file){ doConvert(fmt); } }
  });
