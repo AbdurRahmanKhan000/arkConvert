@@ -810,8 +810,8 @@ function buildWedgeSVG(container, segments, opts){
  function frame(ts){
   if(state.last==null) state.last=ts;
   var dt=(ts-state.last)/1000; state.last=ts;
-  var paused=__arkDragging||__arkConverting||state.reduced; /* v7.1: hover no longer pauses — a cursor resting on the wheel made it look dead. state.hover still highlights the wedge. */
-  if(!paused) state.angle+=dt*(360/60); /* v7: ~60 seconds per revolution: slow and professional, but clearly visibly spinning. Pauses ONLY on hover, during a real drag, and while converting. */
+  var paused=__arkDragging||__arkConverting; /* v7.3: the wheel is arkConvert's signature, so it rotates regardless of the OS reduced-motion setting — that setting was freezing it on machines with Windows animations off, in every browser on that machine. It still pauses during a real drag and while converting. */
+  if(!paused) state.angle+=dt*(360/45); /* v7.3: ~45 seconds per revolution: slow and professional, but movement is obvious within a few seconds. */
   rotor.setAttribute("transform","rotate("+state.angle.toFixed(2)+" 200 200)");
   texts.forEach(function(item){
    var a=item.mid+state.angle*Math.PI/180;
