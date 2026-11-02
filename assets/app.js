@@ -810,7 +810,7 @@ function buildWedgeSVG(container, segments, opts){
  function frame(ts){
   if(state.last==null) state.last=ts;
   var dt=(ts-state.last)/1000; state.last=ts;
-  var paused=state.hover||__arkDragging||__arkConverting||state.reduced;
+  var paused=__arkDragging||__arkConverting||state.reduced; /* v7.1: hover no longer pauses — a cursor resting on the wheel made it look dead. state.hover still highlights the wedge. */
   if(!paused) state.angle+=dt*(360/60); /* v7: ~60 seconds per revolution: slow and professional, but clearly visibly spinning. Pauses ONLY on hover, during a real drag, and while converting. */
   rotor.setAttribute("transform","rotate("+state.angle.toFixed(2)+" 200 200)");
   texts.forEach(function(item){
@@ -921,7 +921,8 @@ document.addEventListener("DOMContentLoaded",function(){
   }
   if(input)input.addEventListener("change",function(){if(input.files[0])receive(input.files[0])});
   if(chip){
-   chip.addEventListener("dragstart",function(e){try{e.dataTransfer.setData("text/plain","arkfile");e.dataTransfer.effectAllowed="copyMove"}catch(err){}});
+   chip.addEventListener("dragstart",function(e){__arkDragging=true;try{e.dataTransfer.setData("text/plain","arkfile");e.dataTransfer.effectAllowed="copyMove"}catch(err){}});
+   chip.addEventListener("dragend",function(){__arkDragging=false;});
   }
   if(changeBtn)changeBtn.addEventListener("click",function(){
    box._arkFile=null;
